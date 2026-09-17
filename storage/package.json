@@ -1,0 +1,12 @@
+{
+  "name": "@agent-office/storage",
+  "private": true,
+  "description": "Storage adapters implementing the Agent Office domain ports.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}

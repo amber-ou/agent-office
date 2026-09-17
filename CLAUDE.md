@@ -8,6 +8,24 @@ Pixel art office where AI agents (Claude Code terminals today, any tool tomorrow
 
 Strict layering: `core/` depends on nothing; `server/` depends only on `core/`; `webview-ui/` depends only on `core/`; `adapters/vscode/` depends on `core/` and `server/`. The standalone CLI never imports `adapters/vscode/` and vice versa.
 
+**Agent Office additions.** This fork adds a Control Plane alongside the upstream tree — see `UPSTREAM.md` for the additive rules and `docs/adr/` (3-digit series) for the decisions. The layering extends to:
+
+```
+domain/     → depends on nothing      Project / AgentDefinition / AgentSession / Task / Skill /
+                                      Knowledge / Output, storage ports, resolveAgentStatus.
+                                      No provider, no storage, no host API, no `node:` import.
+                                      No `enum` (webview-ui imports it under erasableSyntaxOnly).
+storage/    → domain/                 Adapters for the domain ports. In-memory today; file /
+                                      SQLite / Postgres later. Data root `~/.agent-office/`,
+                                      separate from upstream's `~/.pixel-agents/`.
+runtime/    → domain/ + core/         AgentRuntimeAdapter: the DOWNWARD channel (task dispatch).
+                                      Interface only until Milestone 6.
+server/     → core/ + domain/ + storage/ + runtime/
+webview-ui/ → core/ + domain/ (types only)
+```
+
+The upstream `AgentEvent` channel stays one-way and observational. Task dispatch is a separate downward channel and is never added to `AgentEvent` (ADR 003).
+
 ```
 core/                                Protocol + interface definitions (zero runtime side effects)
   asyncapi.yaml                      AsyncAPI 3.0 contract — single source of truth

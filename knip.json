@@ -1,6 +1,8 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "tags": ["-internal"],
+  "tags": [
+    "-internal"
+  ],
   "ignoreDependencies": [
     "tailwindcss",
     "pngjs",
@@ -18,7 +20,8 @@
     "webview-ui/src/office/editor/index.ts",
     "webview-ui/src/office/engine/index.ts",
     "webview-ui/src/office/layout/index.ts",
-    "webview-ui/src/office/sprites/index.ts"
+    "webview-ui/src/office/sprites/index.ts",
+    "runtime/src/adapter.ts"
   ],
   "workspaces": {
     ".": {
@@ -30,7 +33,8 @@
         "adapters/vscode/**/*.ts",
         "core/src/**/*.ts",
         "e2e/**/*.ts",
-        "scripts/**/*.{ts,mjs}"
+        "scripts/**/*.{ts,mjs}",
+        "runtime/src/**/*.ts"
       ]
     },
     "server": {
@@ -50,6 +54,26 @@
       ],
       "project": [
         "src/**/*.{ts,tsx}"
+      ]
+    },
+    "domain": {
+      "entry": [
+        "src/index.ts",
+        "__tests__/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "__tests__/**/*.ts"
+      ]
+    },
+    "storage": {
+      "entry": [
+        "src/index.ts",
+        "__tests__/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "__tests__/**/*.ts"
       ]
     }
   }

@@ -1,0 +1,12 @@
+{
+  "name": "@agent-office/domain",
+  "private": true,
+  "description": "Agent Office domain model. Depends on nothing: no provider, no storage, no UI.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}
