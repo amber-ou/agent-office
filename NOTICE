@@ -1,0 +1,39 @@
+Agent Office
+============
+
+This product includes software developed as part of the Pixel Agents project.
+
+    Pixel Agents
+    https://github.com/pixel-agents-hq/pixel-agents
+    Copyright (c) Pablo de Lucca and Pixel Agents contributors
+    Licensed under the MIT License
+
+Agent Office is a fork of Pixel Agents. The fork point is:
+
+    tag     v1.4.1
+    commit  3537e14
+    date    2026-09
+
+The original MIT License is retained verbatim in LICENSE and applies to all
+code inherited from upstream. Files added by Agent Office are likewise
+MIT licensed.
+
+Directories inherited from upstream and kept under upstream authorship:
+
+    core/            adapters/vscode/    e2e/
+    server/src/      webview-ui/         scripts/
+    eslint-rules/    docs/adr/0001-*     .github/
+
+Directories originated by Agent Office:
+
+    domain/          storage/            runtime/
+    server/src/control/                  webview-ui/src/control/
+    docs/adr/001-*   docs/architecture-*.md
+
+Third-party assets inherited from upstream retain their own attribution.
+In particular, the bundled character sprites are based on the work of
+JIK-A-4 (Metro City free top-down character pack):
+
+    https://jik-a-4.itch.io/metrocity-free-topdown-character-pack
+
+See upstream's docs/external-assets.md for the full asset attribution.
