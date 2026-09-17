@@ -16,14 +16,29 @@ type Branded<Name extends string> = string & { readonly [idBrand]: Name };
 
 export type ProjectId = Branded<'ProjectId'>;
 export type AgentId = Branded<'AgentId'>;
+/** Membership of one Agent in one Project. */
+export type ProjectAgentId = Branded<'ProjectAgentId'>;
 export type SessionId = Branded<'SessionId'>;
 export type TaskId = Branded<'TaskId'>;
 export type SkillId = Branded<'SkillId'>;
-export type KnowledgeId = Branded<'KnowledgeId'>;
+/** Permanent knowledge owned by an Agent. Distinct brand from project knowledge
+ *  so the two can never be substituted for one another (ADR 005). */
+export type AgentKnowledgeId = Branded<'AgentKnowledgeId'>;
+/** Project-scoped knowledge owned by a Project. */
+export type ProjectKnowledgeId = Branded<'ProjectKnowledgeId'>;
 export type OutputId = Branded<'OutputId'>;
 
 /** Every branded id type in the domain. */
-export type EntityId = ProjectId | AgentId | SessionId | TaskId | SkillId | KnowledgeId | OutputId;
+export type EntityId =
+  | ProjectId
+  | AgentId
+  | ProjectAgentId
+  | SessionId
+  | TaskId
+  | SkillId
+  | AgentKnowledgeId
+  | ProjectKnowledgeId
+  | OutputId;
 
 /**
  * Shape check only — deliberately not version- or variant-specific.
@@ -109,7 +124,12 @@ export const asAgentId = (raw: string): AgentId => narrow<AgentId>('AgentId', ra
 export const asSessionId = (raw: string): SessionId => narrow<SessionId>('SessionId', raw);
 export const asTaskId = (raw: string): TaskId => narrow<TaskId>('TaskId', raw);
 export const asSkillId = (raw: string): SkillId => narrow<SkillId>('SkillId', raw);
-export const asKnowledgeId = (raw: string): KnowledgeId => narrow<KnowledgeId>('KnowledgeId', raw);
+export const asProjectAgentId = (raw: string): ProjectAgentId =>
+  narrow<ProjectAgentId>('ProjectAgentId', raw);
+export const asAgentKnowledgeId = (raw: string): AgentKnowledgeId =>
+  narrow<AgentKnowledgeId>('AgentKnowledgeId', raw);
+export const asProjectKnowledgeId = (raw: string): ProjectKnowledgeId =>
+  narrow<ProjectKnowledgeId>('ProjectKnowledgeId', raw);
 export const asOutputId = (raw: string): OutputId => narrow<OutputId>('OutputId', raw);
 
 export const newProjectId = (ids: IdGenerator): ProjectId => asProjectId(ids.next());
@@ -117,5 +137,9 @@ export const newAgentId = (ids: IdGenerator): AgentId => asAgentId(ids.next());
 export const newSessionId = (ids: IdGenerator): SessionId => asSessionId(ids.next());
 export const newTaskId = (ids: IdGenerator): TaskId => asTaskId(ids.next());
 export const newSkillId = (ids: IdGenerator): SkillId => asSkillId(ids.next());
-export const newKnowledgeId = (ids: IdGenerator): KnowledgeId => asKnowledgeId(ids.next());
+export const newProjectAgentId = (ids: IdGenerator): ProjectAgentId => asProjectAgentId(ids.next());
+export const newAgentKnowledgeId = (ids: IdGenerator): AgentKnowledgeId =>
+  asAgentKnowledgeId(ids.next());
+export const newProjectKnowledgeId = (ids: IdGenerator): ProjectKnowledgeId =>
+  asProjectKnowledgeId(ids.next());
 export const newOutputId = (ids: IdGenerator): OutputId => asOutputId(ids.next());

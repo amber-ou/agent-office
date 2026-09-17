@@ -6,22 +6,29 @@
  * repository returns from `put`. Composing it is a query service's job; each
  * collection is fetched from its own repository and may be a partial page.
  *
- * It lives in its own module so `project.ts` does not have to import every other
- * entity module just to declare a view of them (ADR 001).
+ * Note what it does NOT contain: agent knowledge and agent skills. Those belong
+ * to global agents, not to this project (ADR 005). `agents` here is the
+ * membership list plus the definitions those memberships point at — the project
+ * does not own them.
  */
 
 import type { AgentDefinition } from './agentDefinition.js';
 import type { AgentSession } from './agentSession.js';
-import type { KnowledgeItem } from './knowledge.js';
+import type { ProjectKnowledge } from './knowledge.js';
 import type { OutputItem } from './output.js';
 import type { Project } from './project.js';
+import type { ProjectAgent } from './projectAgent.js';
 import type { Task } from './task.js';
 
 export interface ProjectAggregate {
   project: Project;
+  /** Memberships, not ownership. */
+  memberships: readonly ProjectAgent[];
+  /** The global agent definitions those memberships refer to. */
   agents: readonly AgentDefinition[];
   sessions: readonly AgentSession[];
   tasks: readonly Task[];
-  knowledge: readonly KnowledgeItem[];
+  /** Project-owned knowledge only. Agent knowledge is never part of a project. */
+  knowledge: readonly ProjectKnowledge[];
   outputs: readonly OutputItem[];
 }

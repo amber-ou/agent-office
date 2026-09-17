@@ -12,19 +12,26 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   AgentDefinition,
   AgentId,
+  AgentKnowledge,
+  AgentKnowledgeId,
+  AgentKnowledgeRepository,
   AgentRepository,
   AgentSession,
   AgentSessionRepository,
+  BlobOwner,
   BlobStore,
-  KnowledgeId,
-  KnowledgeItem,
-  KnowledgeRepository,
-  KnowledgeType,
+  KnowledgeFilter,
   OutputId,
   OutputItem,
   OutputRepository,
   Project,
+  ProjectAgent,
+  ProjectAgentId,
+  ProjectAgentRepository,
   ProjectId,
+  ProjectKnowledge,
+  ProjectKnowledgeId,
+  ProjectKnowledgeRepository,
   ProjectRepository,
   ProjectStatus,
   Repositories,
@@ -58,17 +65,35 @@ export class InMemoryAgentRepository
   extends InMemoryRepository<AgentDefinition, AgentId>
   implements AgentRepository
 {
-  async listByProject(projectId: ProjectId): Promise<AgentDefinition[]> {
-    return this.all().filter((agent) => agent.projectId === projectId);
+  async list(): Promise<AgentDefinition[]> {
+    return this.all();
   }
 
-  async findByRole(projectId: ProjectId, role: string): Promise<AgentDefinition | null> {
-    const found = this.all().find((agent) => agent.projectId === projectId && agent.role === role);
-    return found ?? null;
+  async listByRole(role: string): Promise<AgentDefinition[]> {
+    return this.all().filter((agent) => agent.role === role);
+  }
+}
+
+export class InMemoryProjectAgentRepository
+  extends InMemoryRepository<ProjectAgent, ProjectAgentId>
+  implements ProjectAgentRepository
+{
+  async listByProject(projectId: ProjectId): Promise<ProjectAgent[]> {
+    return this.all().filter((m) => m.projectId === projectId);
   }
 
-  async listReports(managerAgentId: AgentId): Promise<AgentDefinition[]> {
-    return this.all().filter((agent) => agent.managerAgentId === managerAgentId);
+  async listByAgent(agentId: AgentId): Promise<ProjectAgent[]> {
+    return this.all().filter((m) => m.agentId === agentId);
+  }
+
+  async find(projectId: ProjectId, agentId: AgentId): Promise<ProjectAgent | null> {
+    return this.all().find((m) => m.projectId === projectId && m.agentId === agentId) ?? null;
+  }
+
+  async listReports(projectId: ProjectId, managerAgentId: AgentId): Promise<ProjectAgent[]> {
+    return this.all().filter(
+      (m) => m.projectId === projectId && m.managerAgentId === managerAgentId,
+    );
   }
 }
 
@@ -150,42 +175,49 @@ export class InMemorySkillRepository
   extends InMemoryRepository<Skill, SkillId>
   implements SkillRepository
 {
-  async listAvailable(projectId: ProjectId): Promise<Skill[]> {
-    return this.all().filter((skill) => skill.projectId === null || skill.projectId === projectId);
+  async listByAgent(agentId: AgentId): Promise<Skill[]> {
+    return this.all().filter((skill) => skill.agentId === agentId);
   }
 
-  async listGlobal(): Promise<Skill[]> {
-    return this.all().filter((skill) => skill.projectId === null);
-  }
-
-  async findBySlug(projectId: ProjectId | null, slug: string): Promise<Skill | null> {
-    const found = this.all().find((skill) => skill.projectId === projectId && skill.slug === slug);
+  async findBySlug(agentId: AgentId, slug: string): Promise<Skill | null> {
+    const found = this.all().find((skill) => skill.agentId === agentId && skill.slug === slug);
     return found ?? null;
   }
 }
 
-export class InMemoryKnowledgeRepository
-  extends InMemoryRepository<KnowledgeItem, KnowledgeId>
-  implements KnowledgeRepository
+/** Shared filter predicate for both knowledge kinds. */
+function matchesKnowledgeFilter(
+  item: { type: AgentKnowledge['type']; tags: readonly string[] },
+  filter?: KnowledgeFilter,
+): boolean {
+  if (filter?.type && !filter.type.includes(item.type)) {
+    return false;
+  }
+  if (filter?.tags && !filter.tags.every((tag) => item.tags.includes(tag))) {
+    return false;
+  }
+  return true;
+}
+
+export class InMemoryAgentKnowledgeRepository
+  extends InMemoryRepository<AgentKnowledge, AgentKnowledgeId>
+  implements AgentKnowledgeRepository
 {
-  async listByProject(
-    projectId: ProjectId,
-    filter?: { type?: readonly KnowledgeType[]; tags?: readonly string[] },
-  ): Promise<KnowledgeItem[]> {
-    const types = filter?.type;
-    const tags = filter?.tags;
-    return this.all().filter((item) => {
-      if (item.projectId !== projectId) {
-        return false;
-      }
-      if (types && !types.includes(item.type)) {
-        return false;
-      }
-      if (tags && !tags.every((tag) => item.tags.includes(tag))) {
-        return false;
-      }
-      return true;
-    });
+  async listByAgent(agentId: AgentId, filter?: KnowledgeFilter): Promise<AgentKnowledge[]> {
+    return this.all().filter(
+      (item) => item.agentId === agentId && matchesKnowledgeFilter(item, filter),
+    );
+  }
+}
+
+export class InMemoryProjectKnowledgeRepository
+  extends InMemoryRepository<ProjectKnowledge, ProjectKnowledgeId>
+  implements ProjectKnowledgeRepository
+{
+  async listByProject(projectId: ProjectId, filter?: KnowledgeFilter): Promise<ProjectKnowledge[]> {
+    return this.all().filter(
+      (item) => item.projectId === projectId && matchesKnowledgeFilter(item, filter),
+    );
   }
 }
 
@@ -203,8 +235,9 @@ export class InMemoryOutputRepository
 }
 
 /**
- * In-memory blob store. Keys are namespaced per project so a listing is possible
- * later and so two projects cannot collide on a name.
+ * In-memory blob store. Keys are namespaced by owner (project or agent) so a
+ * listing is possible later, two owners cannot collide on a name, and the
+ * ownership boundary holds for content as well as metadata.
  */
 export class InMemoryBlobStore implements BlobStore, Snapshottable {
   private readonly blobs = new Map<string, string>();
@@ -238,9 +271,15 @@ export class InMemoryBlobStore implements BlobStore, Snapshottable {
     return found;
   }
 
-  async write(hint: { projectId: ProjectId; name: string }, content: string): Promise<ResourceRef> {
+  async write(hint: { owner: BlobOwner; name: string }, content: string): Promise<ResourceRef> {
     this.counter += 1;
-    const key = `${hint.projectId}/${this.counter}-${hint.name}`;
+    // Owner kind is part of the key, so agent-owned content can never collide
+    // with (or be mistaken for) project-owned content.
+    const scope =
+      hint.owner.kind === 'project'
+        ? `project/${hint.owner.projectId}`
+        : `agent/${hint.owner.agentId}`;
+    const key = `${scope}/${this.counter}-${hint.name}`;
     this.blobs.set(key, content);
     return { store: 'blob', key };
   }
@@ -258,10 +297,12 @@ export class InMemoryBlobStore implements BlobStore, Snapshottable {
 export interface InMemoryRepositories extends Repositories {
   projects: InMemoryProjectRepository;
   agents: InMemoryAgentRepository;
+  projectAgents: InMemoryProjectAgentRepository;
   sessions: InMemoryAgentSessionRepository;
   tasks: InMemoryTaskRepository;
   skills: InMemorySkillRepository;
-  knowledge: InMemoryKnowledgeRepository;
+  agentKnowledge: InMemoryAgentKnowledgeRepository;
+  projectKnowledge: InMemoryProjectKnowledgeRepository;
   outputs: InMemoryOutputRepository;
   blobs: InMemoryBlobStore;
 }
@@ -270,10 +311,12 @@ export function createInMemoryRepositories(): InMemoryRepositories {
   return {
     projects: new InMemoryProjectRepository(),
     agents: new InMemoryAgentRepository(),
+    projectAgents: new InMemoryProjectAgentRepository(),
     sessions: new InMemoryAgentSessionRepository(),
     tasks: new InMemoryTaskRepository(),
     skills: new InMemorySkillRepository(),
-    knowledge: new InMemoryKnowledgeRepository(),
+    agentKnowledge: new InMemoryAgentKnowledgeRepository(),
+    projectKnowledge: new InMemoryProjectKnowledgeRepository(),
     outputs: new InMemoryOutputRepository(),
     blobs: new InMemoryBlobStore(),
   };
@@ -319,10 +362,12 @@ export class InMemoryUnitOfWork implements UnitOfWork {
     this.targets = [
       repos.projects,
       repos.agents,
+      repos.projectAgents,
       repos.sessions,
       repos.tasks,
       repos.skills,
-      repos.knowledge,
+      repos.agentKnowledge,
+      repos.projectKnowledge,
       repos.outputs,
       repos.blobs,
     ];

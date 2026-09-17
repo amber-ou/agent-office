@@ -1,21 +1,28 @@
 /**
  * AgentDefinition — "who this agent is".
  *
- * A persistent role that outlives every run. Creating a session, finishing a
- * task, restarting the server, losing a container: none of them delete or mutate
- * a definition.
+ * A GLOBAL, reusable specialist owned by Agent Office itself, not by any
+ * Project. The same agent may be a member of many Projects at once; membership
+ * is `ProjectAgent` (ADR 005). Nothing here is project-scoped.
+ *
+ * An agent independently owns its own instructions, skills, knowledge and tool
+ * configuration. Those are what make it a specialist, and they are its
+ * permanent property: working on a Project never mutates them.
  *
  * INVARIANT (ADR 002): no provider-specific runtime state may appear on this
  * type. No Claude session UUID, no Codex runtime id, no terminal id, no process
  * id, no hook state, and no `status` — those belong to AgentSession or are
- * derived (see agentStatus.ts). `domain/__tests__/agentDefinition.test.ts` pins
- * this at compile time, so a field added here that names runtime state fails the
- * build rather than review.
+ * derived (see agentStatus.ts).
+ *
+ * INVARIANT (ADR 005): no project-scoped field may appear here either. No
+ * `projectId`, no `taskId`, no seat. `domain/__tests__/agentDefinition.test.ts`
+ * pins both at compile time, so a field added here that names runtime state or
+ * a project fails the build rather than review.
  */
 
 import type { Clock, DomainDeps, Timestamp } from './clock.js';
 import { requireText } from './errors.js';
-import type { AgentId, ProjectId, SkillId } from './ids.js';
+import type { AgentId } from './ids.js';
 import { newAgentId } from './ids.js';
 
 /** How a tool is offered to this agent. Mirrors the three answers a runtime can give. */
@@ -32,6 +39,13 @@ export interface ToolGrant {
   mode: ToolMode;
 }
 
+/**
+ * The agent's own long-lived memory.
+ *
+ * Deliberately NOT a place where project work accumulates. Project content,
+ * tasks, outputs and project knowledge never flow in here automatically; a
+ * write to this field is an explicit, deliberate act (ADR 005).
+ */
 export interface AgentMemoryConfig {
   /** Long-lived notes carried into every session for this agent. */
   notes: string;
@@ -40,37 +54,31 @@ export interface AgentMemoryConfig {
 }
 
 /**
- * Office appearance. Values mirror upstream's character palette so a character
- * keeps its look across restarts, but nothing here is runtime state — it is a
- * stable property of the role, like a name.
+ * Office appearance that belongs to the agent wherever it works — its look, not
+ * its location. The seat is per-project and lives on `ProjectAgent`.
  */
 export interface AgentAppearance {
   /** Upstream palette index (0-5). Undefined = let the office pick a diverse one. */
   palette?: number;
   /** Hue rotation in degrees (0-360), applied on top of the palette. */
   hueShift?: number;
-  /** Preferred seat uid in the office layout. */
-  seatId?: string | null;
 }
 
 export interface AgentDefinition {
   id: AgentId;
-  projectId: ProjectId;
-  /** Display name, e.g. "UX Agent". */
+  /** Display name, chosen by the operator. */
   name: string;
-  /** Stable key within the project, e.g. "ux". Unique per project. */
+  /** Stable key for this specialist, e.g. "ux". Agent Office does not enforce
+   *  uniqueness — two differently-configured agents may share a role. */
   role: string;
   description: string;
+  /** The agent's own instructions. Owned by the agent, never by a project. */
   systemPrompt: string;
   /** Provider id, e.g. 'claude'. Never hard-coded downstream. */
   provider: string;
-  /** Model id. Undefined falls back to the project's defaultModel. */
+  /** Model id. Undefined falls back to the project's defaultModel at dispatch. */
   model?: string;
-  /** Skills are referenced, never embedded (ADR 001 / requirement 9). */
-  skillIds: SkillId[];
   tools: ToolGrant[];
-  /** The agent this one reports to. Data only until Milestone 8. */
-  managerAgentId?: AgentId;
   memory: AgentMemoryConfig;
   appearance: AgentAppearance;
   createdAt: Timestamp;
@@ -78,16 +86,13 @@ export interface AgentDefinition {
 }
 
 export interface CreateAgentDefinitionInput {
-  projectId: ProjectId;
   name: string;
   role: string;
   description?: string;
   systemPrompt?: string;
   provider: string;
   model?: string;
-  skillIds?: SkillId[];
   tools?: ToolGrant[];
-  managerAgentId?: AgentId;
   memory?: Partial<AgentMemoryConfig>;
   appearance?: AgentAppearance;
 }
@@ -110,16 +115,13 @@ export function createAgentDefinition(
   const now = deps.clock.now();
   return {
     id: newAgentId(deps.ids),
-    projectId: input.projectId,
     name: requireText('agent.name', input.name),
     role: normalizeRole(input.role),
     description: input.description?.trim() ?? '',
     systemPrompt: input.systemPrompt ?? '',
     provider: requireText('agent.provider', input.provider),
     model: input.model,
-    skillIds: [...(input.skillIds ?? [])],
     tools: [...(input.tools ?? [])],
-    managerAgentId: input.managerAgentId,
     memory: { ...defaultAgentMemoryConfig(), ...input.memory },
     appearance: { ...input.appearance },
     createdAt: now,
@@ -130,14 +132,7 @@ export function createAgentDefinition(
 export type AgentDefinitionPatch = Partial<
   Pick<
     AgentDefinition,
-    | 'name'
-    | 'description'
-    | 'systemPrompt'
-    | 'model'
-    | 'skillIds'
-    | 'tools'
-    | 'managerAgentId'
-    | 'appearance'
+    'name' | 'description' | 'systemPrompt' | 'model' | 'tools' | 'appearance'
   > & { role: string; memory: Partial<AgentMemoryConfig> }
 >;
 
@@ -153,39 +148,9 @@ export function updateAgentDefinition(
     description: patch.description ?? agent.description,
     systemPrompt: patch.systemPrompt ?? agent.systemPrompt,
     model: 'model' in patch ? patch.model : agent.model,
-    skillIds: patch.skillIds ? [...patch.skillIds] : agent.skillIds,
     tools: patch.tools ? [...patch.tools] : agent.tools,
-    managerAgentId: 'managerAgentId' in patch ? patch.managerAgentId : agent.managerAgentId,
     memory: patch.memory ? { ...agent.memory, ...patch.memory } : agent.memory,
     appearance: patch.appearance ? { ...agent.appearance, ...patch.appearance } : agent.appearance,
-    updatedAt: clock.now(),
-  };
-}
-
-// ── Skill assignment (references only) ───────────────────────────
-
-export function assignSkill(
-  agent: AgentDefinition,
-  skillId: SkillId,
-  clock: Clock,
-): AgentDefinition {
-  if (agent.skillIds.includes(skillId)) {
-    return agent;
-  }
-  return { ...agent, skillIds: [...agent.skillIds, skillId], updatedAt: clock.now() };
-}
-
-export function unassignSkill(
-  agent: AgentDefinition,
-  skillId: SkillId,
-  clock: Clock,
-): AgentDefinition {
-  if (!agent.skillIds.includes(skillId)) {
-    return agent;
-  }
-  return {
-    ...agent,
-    skillIds: agent.skillIds.filter((id) => id !== skillId),
     updatedAt: clock.now(),
   };
 }

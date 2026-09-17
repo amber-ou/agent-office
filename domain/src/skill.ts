@@ -1,18 +1,24 @@
 /**
- * Skill — a reusable capability definition.
+ * Skill — a capability owned by ONE Agent.
  *
- * Skills are defined once and referenced by many agents (`AgentDefinition.skillIds`).
- * An agent never embeds a Skill object (requirement 9).
+ * There is no global Skill Library, and skills are not shared between agents
+ * (ADR 005). A skill belongs to the agent that owns it, the same way its
+ * instructions do: two agents that both know how to do user research each own
+ * their own version of that skill, configured their own way.
+ *
+ * Ownership points from the skill to the agent (`Skill.agentId`), so there is
+ * exactly one source of truth. `AgentDefinition` carries no skill list — a
+ * denormalised second copy could disagree with this one.
  *
  * A Skill is deliberately NOT a prompt string. `kind` says what sort of
  * capability it is; `source` says where its content lives. They are orthogonal:
- * a workflow may be inline markdown today and an MCP capability tomorrow without
- * the agent that references it changing at all.
+ * a workflow may be inline markdown today and an MCP capability tomorrow
+ * without the agent that owns it changing at all.
  */
 
 import type { Clock, DomainDeps, Timestamp } from './clock.js';
 import { requireText } from './errors.js';
-import type { ProjectId, SkillId } from './ids.js';
+import type { AgentId, SkillId } from './ids.js';
 import { newSkillId } from './ids.js';
 import type { ResourceRef } from './resource.js';
 
@@ -42,12 +48,9 @@ export type SkillSource =
 
 export interface Skill {
   id: SkillId;
-  /**
-   * null = global skill, available to every project.
-   * Set = private to that project.
-   */
-  projectId: ProjectId | null;
-  /** Stable reference key, e.g. 'ux-research'. Unique within its scope. */
+  /** The agent that owns this skill. Never null, never a project. */
+  agentId: AgentId;
+  /** Stable reference key within the owning agent, e.g. 'user-research'. */
   slug: string;
   name: string;
   description: string;
@@ -60,7 +63,7 @@ export interface Skill {
 }
 
 export interface CreateSkillInput {
-  projectId: ProjectId | null;
+  agentId: AgentId;
   slug: string;
   name: string;
   description?: string;
@@ -80,7 +83,7 @@ export function createSkill(input: CreateSkillInput, deps: DomainDeps): Skill {
   const now = deps.clock.now();
   return {
     id: newSkillId(deps.ids),
-    projectId: input.projectId,
+    agentId: input.agentId,
     slug: normalizeSlug(input.slug),
     name: requireText('skill.name', input.name),
     description: input.description?.trim() ?? '',
@@ -92,6 +95,11 @@ export function createSkill(input: CreateSkillInput, deps: DomainDeps): Skill {
   };
 }
 
+/**
+ * The owning agent is not patchable. Moving a skill between agents is not an
+ * edit — it is copying one agent's capability onto another, which the product
+ * model deliberately does not do implicitly.
+ */
 export type SkillPatch = Partial<
   Pick<Skill, 'name' | 'description' | 'kind' | 'source' | 'requiredTools'> & { slug: string }
 >;
@@ -109,7 +117,7 @@ export function updateSkill(skill: Skill, patch: SkillPatch, clock: Clock): Skil
   };
 }
 
-/** Is this skill usable by the given project? Global skills always are. */
-export function isSkillAvailableTo(skill: Skill, projectId: ProjectId): boolean {
-  return skill.projectId === null || skill.projectId === projectId;
+/** Does this skill belong to the given agent? */
+export function isSkillOwnedBy(skill: Skill, agentId: AgentId): boolean {
+  return skill.agentId === agentId;
 }

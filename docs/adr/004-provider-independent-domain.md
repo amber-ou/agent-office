@@ -86,7 +86,7 @@ adapters/   → core/ + server/
 - Swapping storage is a new package under `storage/` that satisfies the existing
   contract suite — which is written once, in `storage/__tests__/repositoryContract.ts`,
   and is not adapter-specific.
-- The domain is testable with no I/O at all: 73 tests, no filesystem, no clock
+- The domain is testable with no I/O at all: 88 tests, no filesystem, no clock
   freezing, sub-second.
 - The same types describe an entity in the server, in a runtime adapter and in
   the browser.

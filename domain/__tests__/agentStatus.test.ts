@@ -31,10 +31,7 @@ import { testDeps } from './support.js';
 function world() {
   const deps = testDeps();
   const project = createProject({ name: 'AiWow' }, deps);
-  const agent = createAgentDefinition(
-    { projectId: project.id, name: 'QA Agent', role: 'qa', provider: 'claude' },
-    deps,
-  );
+  const agent = createAgentDefinition({ name: 'QA Agent', role: 'qa', provider: 'claude' }, deps);
   const task = createTask(
     { projectId: project.id, title: 'Regression sweep', assignedAgentId: agent.id },
     deps,

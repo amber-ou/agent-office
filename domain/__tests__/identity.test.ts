@@ -12,9 +12,11 @@ import {
   asAgentId,
   asProjectId,
   createAgentDefinition,
-  createKnowledgeItem,
+  createAgentKnowledge,
   createOutputItem,
   createProject,
+  createProjectAgent,
+  createProjectKnowledge,
   createSkill,
   createTask,
   isCanonicalId,
@@ -56,10 +58,7 @@ describe('canonical identity', () => {
   it('gives every entity type a canonical id at creation', () => {
     const deps = testDeps();
     const project = createProject({ name: 'AiWow' }, deps);
-    const agent = createAgentDefinition(
-      { projectId: project.id, name: 'UX Agent', role: 'ux', provider: 'claude' },
-      deps,
-    );
+    const agent = createAgentDefinition({ name: 'UX Agent', role: 'ux', provider: 'claude' }, deps);
     const task = createTask({ projectId: project.id, title: 'Map the onboarding flow' }, deps);
     const session = startSession(
       { agentId: agent.id, projectId: project.id, provider: 'claude' },
@@ -67,7 +66,7 @@ describe('canonical identity', () => {
     );
     const skill = createSkill(
       {
-        projectId: null,
+        agentId: agent.id,
         slug: 'ux-research',
         name: 'UX Research',
         kind: SkillKind.WORKFLOW,
@@ -75,7 +74,18 @@ describe('canonical identity', () => {
       },
       deps,
     );
-    const knowledge = createKnowledgeItem(
+    const membership = createProjectAgent({ projectId: project.id, agentId: agent.id }, deps);
+    const agentKnowledge = createAgentKnowledge(
+      {
+        agentId: agent.id,
+        type: KnowledgeType.UX_RESEARCH,
+        title: 'How I interview',
+        source: { origin: 'human' },
+        location: { store: 'inline', content: 'method' },
+      },
+      deps,
+    );
+    const projectKnowledge = createProjectKnowledge(
       {
         projectId: project.id,
         type: KnowledgeType.UX_RESEARCH,
@@ -100,14 +110,28 @@ describe('canonical identity', () => {
     for (const id of [
       project.id,
       agent.id,
+      membership.id,
       task.id,
       session.id,
       skill.id,
-      knowledge.id,
+      agentKnowledge.id,
+      projectKnowledge.id,
       output.id,
     ]) {
       expect(isCanonicalId(id)).toBe(true);
     }
-    expect(new Set([project.id, agent.id, task.id, session.id, skill.id]).size).toBe(5);
+    expect(
+      new Set([
+        project.id,
+        agent.id,
+        membership.id,
+        task.id,
+        session.id,
+        skill.id,
+        agentKnowledge.id,
+        projectKnowledge.id,
+        output.id,
+      ]).size,
+    ).toBe(9);
   });
 });

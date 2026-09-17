@@ -22,7 +22,7 @@ function scenario() {
   const deps = testDeps();
   const project = createProject({ name: 'AiWow' }, deps);
   const agent = createAgentDefinition(
-    { projectId: project.id, name: 'Research Agent', role: 'research', provider: 'claude' },
+    { name: 'Research Agent', role: 'research', provider: 'claude' },
     deps,
   );
   return { deps, project, agent };

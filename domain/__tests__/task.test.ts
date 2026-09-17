@@ -24,11 +24,11 @@ function world() {
   const deps = testDeps();
   const project = createProject({ name: 'AiWow' }, deps);
   const manager = createAgentDefinition(
-    { projectId: project.id, name: 'Manager Agent', role: 'manager', provider: 'claude' },
+    { name: 'Manager Agent', role: 'manager', provider: 'claude' },
     deps,
   );
   const spec = createAgentDefinition(
-    { projectId: project.id, name: 'Spec Agent', role: 'spec', provider: 'claude' },
+    { name: 'Spec Agent', role: 'spec', provider: 'claude' },
     deps,
   );
   return { deps, project, manager, spec };

@@ -12,7 +12,7 @@
 
 import type { Clock, DomainDeps, Timestamp } from './clock.js';
 import { illegalTransitionError, requireText } from './errors.js';
-import type { AgentId, KnowledgeId, OutputId, ProjectId, TaskId } from './ids.js';
+import type { AgentId, OutputId, ProjectId, ProjectKnowledgeId, TaskId } from './ids.js';
 import { newTaskId } from './ids.js';
 
 export const TaskStatus = {
@@ -41,7 +41,10 @@ export type TaskPriority = (typeof TaskPriority)[keyof typeof TaskPriority];
  */
 export type TaskInput =
   | { kind: 'text'; value: string }
-  | { kind: 'knowledge'; knowledgeId: KnowledgeId }
+  /** Project knowledge only. A task is project-scoped work, and an agent's own
+   *  permanent knowledge is contributed by the agent at context assembly — it is
+   *  not something a project task reaches into (ADR 005). */
+  | { kind: 'projectKnowledge'; knowledgeId: ProjectKnowledgeId }
   | { kind: 'output'; outputId: OutputId }
   | { kind: 'file'; path: string };
 

@@ -15,16 +15,19 @@ import type { AgentDefinition } from './agentDefinition.js';
 import type { AgentSession } from './agentSession.js';
 import type {
   AgentId,
-  KnowledgeId,
+  AgentKnowledgeId,
   OutputId,
+  ProjectAgentId,
   ProjectId,
+  ProjectKnowledgeId,
   SessionId,
   SkillId,
   TaskId,
 } from './ids.js';
-import type { KnowledgeItem, KnowledgeType } from './knowledge.js';
+import type { AgentKnowledge, KnowledgeType, ProjectKnowledge } from './knowledge.js';
 import type { OutputItem } from './output.js';
 import type { Project, ProjectStatus } from './project.js';
+import type { ProjectAgent } from './projectAgent.js';
 import type { ResourceRef } from './resource.js';
 import type { Skill } from './skill.js';
 import type { Task, TaskStatus } from './task.js';
@@ -40,11 +43,25 @@ export interface ProjectRepository extends Repository<Project, ProjectId> {
   list(filter?: { status?: readonly ProjectStatus[] }): Promise<Project[]>;
 }
 
+/**
+ * Agents are global — there is no `listByProject` here. Which agents work on a
+ * project is a membership question, answered by ProjectAgentRepository.
+ */
 export interface AgentRepository extends Repository<AgentDefinition, AgentId> {
-  listByProject(projectId: ProjectId): Promise<AgentDefinition[]>;
-  /** Roles are unique per project, so this returns at most one. */
-  findByRole(projectId: ProjectId, role: string): Promise<AgentDefinition | null>;
-  listReports(managerAgentId: AgentId): Promise<AgentDefinition[]>;
+  list(): Promise<AgentDefinition[]>;
+  /** Returns a LIST: Agent Office does not enforce role uniqueness, so two
+   *  differently-configured agents may legitimately share a role. */
+  listByRole(role: string): Promise<AgentDefinition[]>;
+}
+
+/** The Project <-> Agent many-to-many relation. */
+export interface ProjectAgentRepository extends Repository<ProjectAgent, ProjectAgentId> {
+  listByProject(projectId: ProjectId): Promise<ProjectAgent[]>;
+  listByAgent(agentId: AgentId): Promise<ProjectAgent[]>;
+  /** The membership for one pair, or null. Uniqueness is (projectId, agentId). */
+  find(projectId: ProjectId, agentId: AgentId): Promise<ProjectAgent | null>;
+  /** Direct reports within one project. */
+  listReports(projectId: ProjectId, managerAgentId: AgentId): Promise<ProjectAgent[]>;
 }
 
 export interface AgentSessionRepository extends Repository<AgentSession, SessionId> {
@@ -69,18 +86,38 @@ export interface TaskRepository extends Repository<Task, TaskId> {
   listDependencies(taskId: TaskId): Promise<Task[]>;
 }
 
+/**
+ * Skills belong to one agent. There is no global library, so no `listGlobal`
+ * and no cross-agent lookup.
+ */
 export interface SkillRepository extends Repository<Skill, SkillId> {
-  /** Global skills plus the project's own. */
-  listAvailable(projectId: ProjectId): Promise<Skill[]>;
-  listGlobal(): Promise<Skill[]>;
-  findBySlug(projectId: ProjectId | null, slug: string): Promise<Skill | null>;
+  listByAgent(agentId: AgentId): Promise<Skill[]>;
+  /** Slugs are unique within their owning agent. */
+  findBySlug(agentId: AgentId, slug: string): Promise<Skill | null>;
 }
 
-export interface KnowledgeRepository extends Repository<KnowledgeItem, KnowledgeId> {
-  listByProject(
-    projectId: ProjectId,
-    filter?: { type?: readonly KnowledgeType[]; tags?: readonly string[] },
-  ): Promise<KnowledgeItem[]>;
+/** Filter shared by both knowledge repositories. */
+export interface KnowledgeFilter {
+  type?: readonly KnowledgeType[];
+  tags?: readonly string[];
+}
+
+/**
+ * Two knowledge repositories, not one with an owner filter.
+ *
+ * Separate ports are what make "project work never becomes agent knowledge"
+ * structural: there is no call that writes a ProjectKnowledge through the agent
+ * repository, because the types do not match (ADR 005).
+ */
+export interface AgentKnowledgeRepository extends Repository<AgentKnowledge, AgentKnowledgeId> {
+  listByAgent(agentId: AgentId, filter?: KnowledgeFilter): Promise<AgentKnowledge[]>;
+}
+
+export interface ProjectKnowledgeRepository extends Repository<
+  ProjectKnowledge,
+  ProjectKnowledgeId
+> {
+  listByProject(projectId: ProjectId, filter?: KnowledgeFilter): Promise<ProjectKnowledge[]>;
 }
 
 export interface OutputRepository extends Repository<OutputItem, OutputId> {
@@ -89,22 +126,32 @@ export interface OutputRepository extends Repository<OutputItem, OutputId> {
 }
 
 /**
+ * Who a blob belongs to. Carried into the key so agent-owned content is never
+ * namespaced under a project, and project content is never namespaced under an
+ * agent — the ownership boundary holds for the bytes as well as the metadata.
+ */
+export type BlobOwner =
+  { kind: 'project'; projectId: ProjectId } | { kind: 'agent'; agentId: AgentId };
+
+/**
  * Content storage, separate from metadata storage. Knowledge and Output records
  * are small and queryable; their content may be megabytes and is not.
  */
 export interface BlobStore {
   read(ref: ResourceRef): Promise<string>;
-  write(hint: { projectId: ProjectId; name: string }, content: string): Promise<ResourceRef>;
+  write(hint: { owner: BlobOwner; name: string }, content: string): Promise<ResourceRef>;
   delete(ref: ResourceRef): Promise<boolean>;
 }
 
 export interface Repositories {
   projects: ProjectRepository;
   agents: AgentRepository;
+  projectAgents: ProjectAgentRepository;
   sessions: AgentSessionRepository;
   tasks: TaskRepository;
   skills: SkillRepository;
-  knowledge: KnowledgeRepository;
+  agentKnowledge: AgentKnowledgeRepository;
+  projectKnowledge: ProjectKnowledgeRepository;
   outputs: OutputRepository;
   blobs: BlobStore;
 }

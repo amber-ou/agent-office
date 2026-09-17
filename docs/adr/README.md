@@ -9,12 +9,13 @@ Two series live here, and they are not the same numbering.
 
 ## Agent Office ADRs
 
-| #                                                 | Decision                                                                   |
-| ------------------------------------------------- | -------------------------------------------------------------------------- |
-| [001](001-project-aggregate-boundary.md)          | Project does not embed its agents, tasks, knowledge or outputs             |
-| [002](002-agent-definition-session-separation.md) | AgentDefinition, AgentSession and Task are three separate things           |
-| [003](003-control-plane-runtime-separation.md)    | Control Plane and Agent Runtime are separated, and may not share a machine |
-| [004](004-provider-independent-domain.md)         | The domain depends on no provider, no storage and no UI                    |
+| #                                                   | Decision                                                                   |
+| --------------------------------------------------- | -------------------------------------------------------------------------- |
+| [001](001-project-aggregate-boundary.md)            | Project does not embed its agents, tasks, knowledge or outputs             |
+| [002](002-agent-definition-session-separation.md)   | AgentDefinition, AgentSession and Task are three separate things           |
+| [003](003-control-plane-runtime-separation.md)      | Control Plane and Agent Runtime are separated, and may not share a machine |
+| [004](004-provider-independent-domain.md)           | The domain depends on no provider, no storage and no UI                    |
+| [005](005-global-agents-and-knowledge-ownership.md) | Agents are global; knowledge ownership is strict (amends 001, 002)         |
 
 ## Format
 

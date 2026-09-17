@@ -22,9 +22,11 @@ import type {
 } from '../../domain/src/index.js';
 import {
   createAgentDefinition,
-  createKnowledgeItem,
+  createAgentKnowledge,
   createOutputItem,
   createProject,
+  createProjectAgent,
+  createProjectKnowledge,
   createSkill,
   createTask,
   KnowledgeType,
@@ -90,12 +92,22 @@ export function describeRepositoryContract(factory: ContractFactory): void {
       return project;
     }
 
-    async function seedAgent(project: Project, role: string): Promise<AgentDefinition> {
+    /** A global agent. Joining a project is a separate, explicit step. */
+    async function seedAgent(role: string): Promise<AgentDefinition> {
       const agent = createAgentDefinition(
-        { projectId: project.id, name: `${role} Agent`, role, provider: 'claude' },
+        { name: `${role} Agent`, role, provider: 'claude' },
         deps,
       );
       await repos.agents.put(agent);
+      return agent;
+    }
+
+    /** A global agent plus membership of one project. */
+    async function seedMember(project: Project, role: string): Promise<AgentDefinition> {
+      const agent = await seedAgent(role);
+      await repos.projectAgents.put(
+        createProjectAgent({ projectId: project.id, agentId: agent.id }, deps),
+      );
       return agent;
     }
 
@@ -168,15 +180,52 @@ export function describeRepositoryContract(factory: ContractFactory): void {
     // ── Project isolation ──────────────────────────────────────
 
     describe('project isolation', () => {
-      it('never leaks agents across projects', async () => {
+      it('scopes agents to projects through membership, not ownership', async () => {
         const a = await seedProject('A');
         const b = await seedProject('B');
-        const ux = await seedAgent(a, 'ux');
-        await seedAgent(b, 'ui');
+        const ux = await seedMember(a, 'ux');
+        await seedMember(b, 'ui');
 
-        const inA = await repos.agents.listByProject(a.id);
+        const inA = await repos.projectAgents.listByProject(a.id);
         expect(inA).toHaveLength(1);
-        expect(inA[0]!.id).toBe(ux.id);
+        expect(inA[0]!.agentId).toBe(ux.id);
+
+        // The agent registry itself is global: both agents live in it.
+        expect(await repos.agents.list()).toHaveLength(2);
+      });
+
+      it('lets one agent belong to several projects at once', async () => {
+        const a = await seedProject('A');
+        const b = await seedProject('B');
+        const shared = await seedAgent('ux');
+        await repos.projectAgents.put(
+          createProjectAgent({ projectId: a.id, agentId: shared.id }, deps),
+        );
+        await repos.projectAgents.put(
+          createProjectAgent({ projectId: b.id, agentId: shared.id }, deps),
+        );
+
+        expect(await repos.projectAgents.listByAgent(shared.id)).toHaveLength(2);
+        expect((await repos.projectAgents.find(a.id, shared.id))?.agentId).toBe(shared.id);
+        expect((await repos.projectAgents.find(b.id, shared.id))?.agentId).toBe(shared.id);
+        // One definition, not two.
+        expect(await repos.agents.list()).toHaveLength(1);
+      });
+
+      it('removing a membership leaves the agent and its other memberships intact', async () => {
+        const a = await seedProject('A');
+        const b = await seedProject('B');
+        const shared = await seedAgent('ux');
+        const inA = createProjectAgent({ projectId: a.id, agentId: shared.id }, deps);
+        const inB = createProjectAgent({ projectId: b.id, agentId: shared.id }, deps);
+        await repos.projectAgents.put(inA);
+        await repos.projectAgents.put(inB);
+
+        expect(await repos.projectAgents.delete(inA.id)).toBe(true);
+
+        expect(await repos.agents.get(shared.id)).not.toBeNull();
+        expect(await repos.projectAgents.find(a.id, shared.id)).toBeNull();
+        expect(await repos.projectAgents.find(b.id, shared.id)).not.toBeNull();
       });
 
       it('never leaks tasks across projects', async () => {
@@ -189,25 +238,50 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         expect(await repos.tasks.listByProject(b.id)).toHaveLength(1);
       });
 
-      it('scopes findByRole to one project even when the role name repeats', async () => {
-        const a = await seedProject('A');
-        const b = await seedProject('B');
-        const uxA = await seedAgent(a, 'ux');
-        const uxB = await seedAgent(b, 'ux');
+      it('lists agents by role globally, without asserting uniqueness', async () => {
+        const first = await seedAgent('ux');
+        const second = await seedAgent('ux');
+        await seedAgent('qa');
 
-        expect((await repos.agents.findByRole(a.id, 'ux'))?.id).toBe(uxA.id);
-        expect((await repos.agents.findByRole(b.id, 'ux'))?.id).toBe(uxB.id);
-        expect(await repos.agents.findByRole(a.id, 'qa')).toBeNull();
+        const ux = await repos.agents.listByRole('ux');
+        expect(ux.map((a) => a.id).sort()).toEqual([first.id, second.id].sort());
+        expect(await repos.agents.listByRole('nobody')).toHaveLength(0);
       });
 
-      it('never leaks knowledge or outputs across projects', async () => {
+      it('scopes the reporting line to one project', async () => {
         const a = await seedProject('A');
         const b = await seedProject('B');
-        const agentA = await seedAgent(a, 'spec');
+        const manager = await seedAgent('manager');
+        const worker = await seedAgent('ux');
+        await repos.projectAgents.put(
+          createProjectAgent({ projectId: a.id, agentId: manager.id }, deps),
+        );
+        await repos.projectAgents.put(
+          createProjectAgent(
+            { projectId: a.id, agentId: worker.id, managerAgentId: manager.id },
+            deps,
+          ),
+        );
+        // In B the same two agents are peers.
+        await repos.projectAgents.put(
+          createProjectAgent({ projectId: b.id, agentId: manager.id }, deps),
+        );
+        await repos.projectAgents.put(
+          createProjectAgent({ projectId: b.id, agentId: worker.id }, deps),
+        );
+
+        expect(await repos.projectAgents.listReports(a.id, manager.id)).toHaveLength(1);
+        expect(await repos.projectAgents.listReports(b.id, manager.id)).toHaveLength(0);
+      });
+
+      it('never leaks project knowledge or outputs across projects', async () => {
+        const a = await seedProject('A');
+        const b = await seedProject('B');
+        const agentA = await seedMember(a, 'spec');
         const taskA = await seedTask(a, 'spec it', { assignedAgentId: agentA.id });
 
-        await repos.knowledge.put(
-          createKnowledgeItem(
+        await repos.projectKnowledge.put(
+          createProjectKnowledge(
             {
               projectId: a.id,
               type: KnowledgeType.PRODUCT_REQUIREMENTS,
@@ -232,8 +306,8 @@ export function describeRepositoryContract(factory: ContractFactory): void {
           ),
         );
 
-        expect(await repos.knowledge.listByProject(a.id)).toHaveLength(1);
-        expect(await repos.knowledge.listByProject(b.id)).toHaveLength(0);
+        expect(await repos.projectKnowledge.listByProject(a.id)).toHaveLength(1);
+        expect(await repos.projectKnowledge.listByProject(b.id)).toHaveLength(0);
         expect(await repos.outputs.listByProject(a.id)).toHaveLength(1);
         expect(await repos.outputs.listByProject(b.id)).toHaveLength(0);
       });
@@ -253,7 +327,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
       it('filters tasks by status and by agent', async () => {
         const project = await seedProject('AiWow');
-        const qa = await seedAgent(project, 'qa');
+        const qa = await seedMember(project, 'qa');
         const todo = await seedTask(project, 'todo', { assignedAgentId: qa.id });
         await repos.tasks.put({ ...todo, status: TaskStatus.TODO });
         await seedTask(project, 'unassigned');
@@ -285,10 +359,10 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         expect(await repos.tasks.listDependencies(parent.id)).toHaveLength(0);
       });
 
-      it('filters knowledge by type and by tag', async () => {
+      it('filters project knowledge by type and by tag', async () => {
         const project = await seedProject('AiWow');
-        await repos.knowledge.put(
-          createKnowledgeItem(
+        await repos.projectKnowledge.put(
+          createProjectKnowledge(
             {
               projectId: project.id,
               type: KnowledgeType.UX_RESEARCH,
@@ -300,8 +374,8 @@ export function describeRepositoryContract(factory: ContractFactory): void {
             deps,
           ),
         );
-        await repos.knowledge.put(
-          createKnowledgeItem(
+        await repos.projectKnowledge.put(
+          createProjectKnowledge(
             {
               projectId: project.id,
               type: KnowledgeType.DESIGN_SYSTEM,
@@ -315,47 +389,118 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         );
 
         expect(
-          await repos.knowledge.listByProject(project.id, { type: [KnowledgeType.UX_RESEARCH] }),
+          await repos.projectKnowledge.listByProject(project.id, {
+            type: [KnowledgeType.UX_RESEARCH],
+          }),
         ).toHaveLength(1);
-        expect(await repos.knowledge.listByProject(project.id, { tags: ['q1'] })).toHaveLength(2);
         expect(
-          await repos.knowledge.listByProject(project.id, { tags: ['discovery'] }),
+          await repos.projectKnowledge.listByProject(project.id, { tags: ['q1'] }),
+        ).toHaveLength(2);
+        expect(
+          await repos.projectKnowledge.listByProject(project.id, { tags: ['discovery'] }),
         ).toHaveLength(1);
       });
 
-      it('offers global skills to every project alongside private ones', async () => {
-        const a = await seedProject('A');
-        const b = await seedProject('B');
+      it('filters agent knowledge by type and by tag, scoped to its owner', async () => {
+        const owner = await seedAgent('ux');
+        const other = await seedAgent('qa');
+        await repos.agentKnowledge.put(
+          createAgentKnowledge(
+            {
+              agentId: owner.id,
+              type: KnowledgeType.UX_RESEARCH,
+              title: 'How I interview',
+              source: { origin: 'human' },
+              location: { store: 'inline', content: 'method' },
+              tags: ['method'],
+            },
+            deps,
+          ),
+        );
+
+        expect(await repos.agentKnowledge.listByAgent(owner.id)).toHaveLength(1);
+        expect(await repos.agentKnowledge.listByAgent(other.id)).toHaveLength(0);
+        expect(
+          await repos.agentKnowledge.listByAgent(owner.id, { type: [KnowledgeType.UX_RESEARCH] }),
+        ).toHaveLength(1);
+        expect(
+          await repos.agentKnowledge.listByAgent(owner.id, { tags: ['unrelated'] }),
+        ).toHaveLength(0);
+      });
+
+      it('keeps agent knowledge out of every project listing, and vice versa', async () => {
+        const project = await seedProject('AiWow');
+        const agent = await seedMember(project, 'ux');
+
+        await repos.agentKnowledge.put(
+          createAgentKnowledge(
+            {
+              agentId: agent.id,
+              type: KnowledgeType.MARKDOWN,
+              title: 'Permanent',
+              source: { origin: 'human' },
+              location: { store: 'inline', content: 'a' },
+            },
+            deps,
+          ),
+        );
+        await repos.projectKnowledge.put(
+          createProjectKnowledge(
+            {
+              projectId: project.id,
+              type: KnowledgeType.MARKDOWN,
+              title: 'Temporary',
+              source: { origin: 'agent', agentId: agent.id },
+              location: { store: 'inline', content: 'b' },
+            },
+            deps,
+          ),
+        );
+
+        // Two stores, no overlap: project work never shows up as agent knowledge.
+        const agentItems = await repos.agentKnowledge.listByAgent(agent.id);
+        const projectItems = await repos.projectKnowledge.listByProject(project.id);
+        expect(agentItems.map((i) => i.title)).toEqual(['Permanent']);
+        expect(projectItems.map((i) => i.title)).toEqual(['Temporary']);
+      });
+
+      it('scopes skills to their owning agent, with no global library', async () => {
+        const ux = await seedAgent('ux');
+        const qa = await seedAgent('qa');
+
         await repos.skills.put(
           createSkill(
             {
-              projectId: null,
-              slug: 'ux-research',
-              name: 'UX Research',
+              agentId: ux.id,
+              slug: 'user-research',
+              name: 'User Research',
               kind: SkillKind.WORKFLOW,
               source: { origin: 'content', ref: { store: 'inline', content: '#' } },
             },
             deps,
           ),
         );
+        // Same slug, different agent: an independent skill, not a shared one.
         await repos.skills.put(
           createSkill(
             {
-              projectId: a.id,
-              slug: 'a-tone',
-              name: 'A Tone',
-              kind: SkillKind.INSTRUCTION,
+              agentId: qa.id,
+              slug: 'user-research',
+              name: 'User Research (QA flavour)',
+              kind: SkillKind.WORKFLOW,
               source: { origin: 'content', ref: { store: 'inline', content: '#' } },
             },
             deps,
           ),
         );
 
-        expect(await repos.skills.listAvailable(a.id)).toHaveLength(2);
-        expect(await repos.skills.listAvailable(b.id)).toHaveLength(1);
-        expect(await repos.skills.listGlobal()).toHaveLength(1);
-        expect((await repos.skills.findBySlug(null, 'ux-research'))?.slug).toBe('ux-research');
-        expect(await repos.skills.findBySlug(b.id, 'a-tone')).toBeNull();
+        expect(await repos.skills.listByAgent(ux.id)).toHaveLength(1);
+        expect(await repos.skills.listByAgent(qa.id)).toHaveLength(1);
+        expect((await repos.skills.findBySlug(ux.id, 'user-research'))?.name).toBe('User Research');
+        expect((await repos.skills.findBySlug(qa.id, 'user-research'))?.name).toBe(
+          'User Research (QA flavour)',
+        );
+        expect(await repos.skills.findBySlug(ux.id, 'nothing')).toBeNull();
       });
     });
 
@@ -364,7 +509,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
     describe('sessions', () => {
       it('separates live sessions from terminal ones', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'research');
+        const agent = await seedMember(project, 'research');
         const live = startSession(
           { agentId: agent.id, projectId: project.id, provider: 'claude' },
           deps,
@@ -388,7 +533,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
       it('returns a LIST for a provider session id, scoped to its provider', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'research');
+        const agent = await seedMember(project, 'research');
         const shared = 'aaaaaaaa-0000-4000-8000-000000000001';
 
         // The same provider id reused across two runs — legal, and the reason
@@ -433,7 +578,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
       it('stores a session that has no provider id at all', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'research');
+        const agent = await seedMember(project, 'research');
         const session = startSession(
           { agentId: agent.id, projectId: project.id, provider: 'claude' },
           deps,
@@ -446,7 +591,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
       it('keeps the agent definition after its session is deleted', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'research');
+        const agent = await seedMember(project, 'research');
         const session = startSession(
           { agentId: agent.id, projectId: project.id, provider: 'claude' },
           deps,
@@ -465,7 +610,10 @@ export function describeRepositoryContract(factory: ContractFactory): void {
     describe('blob store', () => {
       it('round-trips content through an opaque reference', async () => {
         const project = await seedProject('AiWow');
-        const ref = await repos.blobs.write({ projectId: project.id, name: 'prd.md' }, '# PRD');
+        const ref = await repos.blobs.write(
+          { owner: { kind: 'project', projectId: project.id }, name: 'prd.md' },
+          '# PRD',
+        );
 
         expect(await repos.blobs.read(ref)).toBe('# PRD');
         expect(await repos.blobs.delete(ref)).toBe(true);
@@ -475,11 +623,34 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         expect(await repos.blobs.read({ store: 'inline', content: 'hello' })).toBe('hello');
       });
 
+      it('namespaces agent-owned content apart from project-owned content', async () => {
+        const project = await seedProject('AiWow');
+        const agent = await seedAgent('ux');
+        const projectRef = await repos.blobs.write(
+          { owner: { kind: 'project', projectId: project.id }, name: 'notes.md' },
+          'project note',
+        );
+        const agentRef = await repos.blobs.write(
+          { owner: { kind: 'agent', agentId: agent.id }, name: 'notes.md' },
+          'agent note',
+        );
+
+        expect(await repos.blobs.read(projectRef)).toBe('project note');
+        expect(await repos.blobs.read(agentRef)).toBe('agent note');
+        expect(projectRef).not.toEqual(agentRef);
+      });
+
       it('keeps two projects from colliding on the same name', async () => {
         const a = await seedProject('A');
         const b = await seedProject('B');
-        const refA = await repos.blobs.write({ projectId: a.id, name: 'notes.md' }, 'from A');
-        const refB = await repos.blobs.write({ projectId: b.id, name: 'notes.md' }, 'from B');
+        const refA = await repos.blobs.write(
+          { owner: { kind: 'project', projectId: a.id }, name: 'notes.md' },
+          'from A',
+        );
+        const refB = await repos.blobs.write(
+          { owner: { kind: 'project', projectId: b.id }, name: 'notes.md' },
+          'from B',
+        );
 
         expect(await repos.blobs.read(refA)).toBe('from A');
         expect(await repos.blobs.read(refB)).toBe('from B');
@@ -507,7 +678,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
         const returned = await uow.run(async (tx) => {
           const agent = createAgentDefinition(
-            { projectId: project.id, name: 'UX Agent', role: 'ux', provider: 'claude' },
+            { name: 'UX Agent', role: 'ux', provider: 'claude' },
             deps,
           );
           await tx.agents.put(agent);
@@ -529,7 +700,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
       it('2. rolls back every write when the transaction fails', async () => {
         const project = await seedProject('AiWow');
         const agent = createAgentDefinition(
-          { projectId: project.id, name: 'UX Agent', role: 'ux', provider: 'claude' },
+          { name: 'UX Agent', role: 'ux', provider: 'claude' },
           deps,
         );
         const task = createTask({ projectId: project.id, title: 'Doomed' }, deps);
@@ -538,8 +709,8 @@ export function describeRepositoryContract(factory: ContractFactory): void {
           uow.run(async (tx) => {
             await tx.agents.put(agent);
             await tx.tasks.put(task);
-            await tx.knowledge.put(
-              createKnowledgeItem(
+            await tx.projectKnowledge.put(
+              createProjectKnowledge(
                 {
                   projectId: project.id,
                   type: KnowledgeType.MARKDOWN,
@@ -550,22 +721,35 @@ export function describeRepositoryContract(factory: ContractFactory): void {
                 deps,
               ),
             );
+            await tx.agentKnowledge.put(
+              createAgentKnowledge(
+                {
+                  agentId: agent.id,
+                  type: KnowledgeType.MARKDOWN,
+                  title: 'Permanent',
+                  source: { origin: 'human' },
+                  location: { store: 'inline', content: 'y' },
+                },
+                deps,
+              ),
+            );
             throw new Boom();
           }),
         ).rejects.toThrow(Boom);
 
         expect(await repos.agents.get(agent.id)).toBeNull();
         expect(await repos.tasks.get(task.id)).toBeNull();
-        expect(await repos.agents.listByProject(project.id)).toHaveLength(0);
+        expect(await repos.agents.list()).toHaveLength(0);
         expect(await repos.tasks.listByProject(project.id)).toHaveLength(0);
-        expect(await repos.knowledge.listByProject(project.id)).toHaveLength(0);
+        expect(await repos.projectKnowledge.listByProject(project.id)).toHaveLength(0);
+        expect(await repos.agentKnowledge.listByAgent(agent.id)).toHaveLength(0);
         // The pre-transaction write is untouched.
         expect(await repos.projects.get(project.id)).not.toBeNull();
       });
 
       it('3. restores updates when the transaction fails', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'ux');
+        const agent = await seedMember(project, 'ux');
         const task = await seedTask(project, 'Original title', { assignedAgentId: agent.id });
 
         await expect(
@@ -588,7 +772,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
       it('4. restores deletes when the transaction fails', async () => {
         const project = await seedProject('AiWow');
-        const agent = await seedAgent(project, 'ux');
+        const agent = await seedMember(project, 'ux');
         const task = await seedTask(project, 'Kept', { assignedAgentId: agent.id });
 
         await expect(
@@ -604,7 +788,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         // ...and back afterwards, byte for byte.
         expect(await repos.agents.get(agent.id)).toEqual(agent);
         expect(await repos.tasks.get(task.id)).toEqual(task);
-        expect(await repos.agents.listByProject(project.id)).toHaveLength(1);
+        expect(await repos.agents.list()).toHaveLength(1);
         expect(await repos.tasks.listByProject(project.id)).toHaveLength(1);
       });
 
@@ -612,7 +796,7 @@ export function describeRepositoryContract(factory: ContractFactory): void {
         // Project update + Task create + Agent delete. One of them throws, so
         // all three must be back where they started.
         const project = await seedProject('AiWow');
-        const doomedAgent = await seedAgent(project, 'qa');
+        const doomedAgent = await seedMember(project, 'qa');
         const newTask = createTask({ projectId: project.id, title: 'Never created' }, deps);
 
         await expect(
@@ -635,7 +819,10 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
         await expect(
           uow.run(async (tx) => {
-            ref = await tx.blobs.write({ projectId: project.id, name: 'prd.md' }, '# PRD');
+            ref = await tx.blobs.write(
+              { owner: { kind: 'project', projectId: project.id }, name: 'prd.md' },
+              '# PRD',
+            );
             expect(await tx.blobs.read(ref)).toBe('# PRD');
             throw new Boom();
           }),
@@ -691,11 +878,11 @@ export function describeRepositoryContract(factory: ContractFactory): void {
       const calls = [
         repos.projects.get(project.id),
         repos.projects.list(),
-        repos.agents.listByProject(project.id),
+        repos.agents.list(),
+        repos.projectAgents.listByProject(project.id),
         repos.tasks.listByProject(project.id),
         repos.sessions.listByProject(project.id),
-        repos.skills.listAvailable(project.id),
-        repos.knowledge.listByProject(project.id),
+        repos.projectKnowledge.listByProject(project.id),
         repos.outputs.listByProject(project.id),
       ];
       for (const call of calls) {

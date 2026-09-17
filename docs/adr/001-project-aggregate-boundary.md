@@ -1,6 +1,7 @@
 # 001 — Project aggregate boundary
 
 **Status**: Accepted (Milestone 1)
+**Amended by**: [ADR 005](005-global-agents-and-knowledge-ownership.md) — agents are global, so they are not project contents at all; membership is `ProjectAgent`.
 **Date**: 2026-09
 
 ## Context
@@ -43,13 +44,17 @@ Three concrete problems with the embedded shape:
 `Project` holds only its own fields. Contents reference it by foreign key:
 
 ```ts
-Project        { id, name, description, status, settings, createdAt, updatedAt }
-AgentDefinition{ projectId, … }
-Task           { projectId, … }
-KnowledgeItem  { projectId, … }
-OutputItem     { projectId, … }
-AgentSession   { projectId, … }
+Project          { id, name, description, status, settings, createdAt, updatedAt }
+ProjectAgent     { projectId, agentId, … }   // membership (ADR 005)
+Task             { projectId, … }
+ProjectKnowledge { projectId, … }            // agent knowledge is NOT project content
+OutputItem       { projectId, … }
+AgentSession     { projectId, … }
 ```
+
+`AgentDefinition` is absent from that list on purpose: ADR 005 makes agents
+global, so a project does not contain them — it has memberships pointing at
+them.
 
 Each has its own repository with a `listByProject(projectId, filter?)` method.
 

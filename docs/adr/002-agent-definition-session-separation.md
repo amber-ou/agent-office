@@ -1,6 +1,7 @@
 # 002 — AgentDefinition, AgentSession and Task are three separate things
 
 **Status**: Accepted (Milestone 1)
+**Amended by**: [ADR 005](005-global-agents-and-knowledge-ownership.md) — the definition is additionally free of PROJECT scope, not just runtime state.
 **Date**: 2026-09
 
 ## Context
@@ -32,7 +33,7 @@ Three types, three lifetimes, one direction of dependency.
 
 | Type              | Answers                               | Lifetime                 |
 | ----------------- | ------------------------------------- | ------------------------ |
-| `AgentDefinition` | who this agent is                     | until a human deletes it |
+| `AgentDefinition` | who this agent is (global, ADR 005)   | until a human deletes it |
 | `AgentSession`    | one runtime instance of this agent    | one run                  |
 | `Task`            | what this agent was asked to complete | until done or abandoned  |
 
