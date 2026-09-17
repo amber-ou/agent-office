@@ -7,6 +7,8 @@
  * contract tests unchanged.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import type {
   AgentDefinition,
   AgentId,
@@ -39,6 +41,8 @@ import type {
 } from '../../../domain/src/index.js';
 import { isLiveSession } from '../../../domain/src/index.js';
 import { InMemoryRepository } from './inMemoryRepository.js';
+import type { SnapshotHandle, Snapshottable } from './transaction.js';
+import { captureAll, captureMap, Mutex } from './transaction.js';
 
 export class InMemoryProjectRepository
   extends InMemoryRepository<Project, ProjectId>
@@ -202,9 +206,23 @@ export class InMemoryOutputRepository
  * In-memory blob store. Keys are namespaced per project so a listing is possible
  * later and so two projects cannot collide on a name.
  */
-export class InMemoryBlobStore implements BlobStore {
+export class InMemoryBlobStore implements BlobStore, Snapshottable {
   private readonly blobs = new Map<string, string>();
   private counter = 0;
+
+  /** Transaction support. The counter is part of the state: rolling back a
+   *  transaction that wrote blobs must also give back the key sequence, or a
+   *  retry produces different keys for the same content. */
+  capture(): SnapshotHandle {
+    const blobs = captureMap(this.blobs);
+    const counter = this.counter;
+    return {
+      restore: (): void => {
+        blobs.restore();
+        this.counter = counter;
+      },
+    };
+  }
 
   async read(ref: ResourceRef): Promise<string> {
     if (ref.store === 'inline') {
@@ -262,17 +280,79 @@ export function createInMemoryRepositories(): InMemoryRepositories {
 }
 
 /**
- * Non-transactional UnitOfWork.
+ * Transactional UnitOfWork: all-or-nothing, matching what a SQL adapter gives.
  *
- * It runs the callback and propagates failures; it does NOT roll back, because
- * a Map has nothing to roll back to. That is an honest limitation of an
- * in-memory adapter rather than a stub — the port exists so the SQL adapter can
- * wrap a real transaction later without any call site changing.
+ * snapshot → execute → success: discard the snapshot
+ *                    → failure: restore the snapshot, then rethrow
+ *
+ * Every repository and the blob store are captured together, so a failure part
+ * way through a multi-repository write leaves none of it behind. The whole
+ * mechanism (snapshots, handles, the mutex) is storage-internal; the domain's
+ * `UnitOfWork` port is still one `run()` method and knows nothing about it.
+ *
+ * Top-level transactions are serialised. Two overlapping ones would each
+ * snapshot a state already containing the other's writes, so one rollback would
+ * discard the other's committed work.
+ *
+ * A `run()` nested inside another JOINS the outer transaction rather than
+ * opening its own: it takes no snapshot and commits nothing, so a throw
+ * anywhere inside rolls the whole outer transaction back. Opening a second one
+ * would deadlock on the mutex, and treating it as independent would let an
+ * inner commit survive an outer rollback.
  */
 export class InMemoryUnitOfWork implements UnitOfWork {
-  constructor(private readonly repos: InMemoryRepositories) {}
+  private readonly mutex = new Mutex();
+  private readonly targets: readonly Snapshottable[];
+  /**
+   * Marks the async context of a transaction in flight.
+   *
+   * A plain depth counter cannot do this job: while an outer transaction is
+   * parked on an `await`, an UNRELATED top-level caller would also observe
+   * depth > 0, silently join a transaction it knows nothing about, and be
+   * rolled back with it — after its own callback had already returned
+   * successfully. AsyncLocalStorage answers the question actually being asked,
+   * "am I running inside that callback", rather than "is one open somewhere".
+   */
+  private readonly inTransaction = new AsyncLocalStorage<true>();
+
+  constructor(private readonly repos: InMemoryRepositories) {
+    this.targets = [
+      repos.projects,
+      repos.agents,
+      repos.sessions,
+      repos.tasks,
+      repos.skills,
+      repos.knowledge,
+      repos.outputs,
+      repos.blobs,
+    ];
+  }
 
   async run<T>(fn: (repos: Repositories) => Promise<T>): Promise<T> {
-    return fn(this.repos);
+    if (this.inTransaction.getStore()) {
+      return fn(this.repos);
+    }
+    return this.mutex.run(() =>
+      this.inTransaction.run(true, async () => {
+        const snapshot: SnapshotHandle = captureAll(this.targets);
+        try {
+          return await fn(this.repos);
+        } catch (error) {
+          snapshot.restore();
+          throw error;
+        }
+      }),
+    );
   }
+}
+
+/** Repositories plus the UnitOfWork that spans them. */
+export interface InMemoryStorage {
+  repos: InMemoryRepositories;
+  uow: InMemoryUnitOfWork;
+}
+
+export function createInMemoryStorage(): InMemoryStorage {
+  const repos = createInMemoryRepositories();
+  return { repos, uow: new InMemoryUnitOfWork(repos) };
 }

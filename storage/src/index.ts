@@ -3,7 +3,8 @@
  *
  * Milestone 1 ships the in-memory adapter only. File, SQLite and Postgres
  * adapters land in Milestone 2 and must satisfy the same contract suite in
- * `storage/__tests__/repositoryContract.ts` without it being modified.
+ * `storage/__tests__/repositoryContract.ts` without it being modified — the
+ * transaction contract included.
  *
  * The development data root is `~/.agent-office/` — deliberately separate from
  * upstream's `~/.pixel-agents/`, so neither writes into the other's files. That
@@ -12,9 +13,10 @@
  */
 
 export { clone, InMemoryRepository } from './memory/inMemoryRepository.js';
-export type { InMemoryRepositories } from './memory/repositories.js';
+export type { InMemoryRepositories, InMemoryStorage } from './memory/repositories.js';
 export {
   createInMemoryRepositories,
+  createInMemoryStorage,
   InMemoryAgentRepository,
   InMemoryAgentSessionRepository,
   InMemoryBlobStore,
@@ -25,3 +27,4 @@ export {
   InMemoryTaskRepository,
   InMemoryUnitOfWork,
 } from './memory/repositories.js';
+export type { SnapshotHandle, Snapshottable } from './memory/transaction.js';

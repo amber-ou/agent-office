@@ -12,16 +12,17 @@
  */
 
 import type { Repository } from '../../../domain/src/index.js';
+import type { SnapshotHandle, Snapshottable } from './transaction.js';
+import { captureMap } from './transaction.js';
 
 /** JSON deep copy. Every domain entity is JSON-safe by construction. */
 export function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export class InMemoryRepository<T extends { id: Id }, Id extends string> implements Repository<
-  T,
-  Id
-> {
+export class InMemoryRepository<T extends { id: Id }, Id extends string>
+  implements Repository<T, Id>, Snapshottable
+{
   protected readonly items = new Map<Id, T>();
 
   async get(id: Id): Promise<T | null> {
@@ -40,6 +41,11 @@ export class InMemoryRepository<T extends { id: Id }, Id extends string> impleme
   /** All entities, copied. Subclasses filter on top of this. */
   protected all(): T[] {
     return [...this.items.values()].map((item) => clone(item));
+  }
+
+  /** Transaction support — see `transaction.ts`. Storage-internal. */
+  capture(): SnapshotHandle {
+    return captureMap(this.items);
   }
 
   /** Test/diagnostic helper: how many entities are held. */

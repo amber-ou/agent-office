@@ -111,10 +111,22 @@ export interface Repositories {
 
 /**
  * Atomicity boundary for writes spanning more than one repository — creating a
- * Task, assigning an Agent and recording an Output in one step, say. In-memory
- * and file adapters may implement it as a plain call; a SQL adapter wraps a
- * transaction. Declaring it now means call sites do not need rewriting when
- * that day comes.
+ * Task, assigning an Agent and recording an Output in one step, say.
+ *
+ * The contract is all-or-nothing and is the SAME for every adapter:
+ *
+ *  - the callback returns  → every write inside it is committed;
+ *  - the callback throws   → every write inside it is rolled back, across all
+ *                            repositories, and the error is rethrown unchanged.
+ *
+ * Rollback is not optional for adapters that find it inconvenient. An in-memory
+ * adapter snapshots and restores; a SQL adapter opens a real transaction. A
+ * caller must be able to reason about failure identically either way, so
+ * `storage/__tests__/repositoryContract.ts` pins the behaviour rather than the
+ * mechanism.
+ *
+ * How a given adapter achieves it is entirely its own business — no snapshot,
+ * handle, connection or transaction type appears in this port.
  */
 export interface UnitOfWork {
   run<T>(fn: (repos: Repositories) => Promise<T>): Promise<T>;

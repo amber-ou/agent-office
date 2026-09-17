@@ -18,6 +18,7 @@ import type {
   Project,
   Repositories,
   Task,
+  UnitOfWork,
 } from '../../domain/src/index.js';
 import {
   createAgentDefinition,
@@ -59,18 +60,27 @@ function steppingClock(): Clock {
   };
 }
 
+/** An adapter under test: its repositories and the UnitOfWork spanning them. */
+export interface ContractSubject {
+  repos: Repositories;
+  uow: UnitOfWork;
+}
+
 export interface ContractFactory {
   name: string;
-  create(): Promise<Repositories> | Repositories;
+  create(): Promise<ContractSubject> | ContractSubject;
 }
 
 export function describeRepositoryContract(factory: ContractFactory): void {
   describe(`repository contract: ${factory.name}`, () => {
     let repos: Repositories;
+    let uow: UnitOfWork;
     let deps: DomainDeps;
 
     beforeEach(async () => {
-      repos = await factory.create();
+      const subject = await factory.create();
+      repos = subject.repos;
+      uow = subject.uow;
       deps = { ids: sequentialIds(1), clock: steppingClock() };
     });
 
@@ -473,6 +483,204 @@ export function describeRepositoryContract(factory: ContractFactory): void {
 
         expect(await repos.blobs.read(refA)).toBe('from A');
         expect(await repos.blobs.read(refB)).toBe('from B');
+      });
+    });
+
+    // ── Transactions ───────────────────────────────────────────
+    //
+    // All-or-nothing, identical for every adapter. An adapter that cannot roll
+    // back does not satisfy this port. The tests assert BEHAVIOUR only — no
+    // snapshot, handle, connection or transaction type is referenced — so an
+    // in-memory adapter and a SQL one are held to the same standard.
+
+    describe('transactions', () => {
+      /** Marker error, so a rollback assertion cannot pass on an unrelated throw. */
+      class Boom extends Error {
+        constructor() {
+          super('boom');
+          this.name = 'Boom';
+        }
+      }
+
+      it('1. commits every write when the transaction succeeds', async () => {
+        const project = await seedProject('AiWow');
+
+        const returned = await uow.run(async (tx) => {
+          const agent = createAgentDefinition(
+            { projectId: project.id, name: 'UX Agent', role: 'ux', provider: 'claude' },
+            deps,
+          );
+          await tx.agents.put(agent);
+          const task = createTask(
+            { projectId: project.id, title: 'Map the flow', assignedAgentId: agent.id },
+            deps,
+          );
+          await tx.tasks.put(task);
+          await tx.projects.put({ ...project, name: 'AiWow v2' });
+          return { agentId: agent.id, taskId: task.id };
+        });
+
+        // Committed state is visible outside the transaction.
+        expect(await repos.agents.get(returned.agentId)).not.toBeNull();
+        expect(await repos.tasks.get(returned.taskId)).not.toBeNull();
+        expect((await repos.projects.get(project.id))?.name).toBe('AiWow v2');
+      });
+
+      it('2. rolls back every write when the transaction fails', async () => {
+        const project = await seedProject('AiWow');
+        const agent = createAgentDefinition(
+          { projectId: project.id, name: 'UX Agent', role: 'ux', provider: 'claude' },
+          deps,
+        );
+        const task = createTask({ projectId: project.id, title: 'Doomed' }, deps);
+
+        await expect(
+          uow.run(async (tx) => {
+            await tx.agents.put(agent);
+            await tx.tasks.put(task);
+            await tx.knowledge.put(
+              createKnowledgeItem(
+                {
+                  projectId: project.id,
+                  type: KnowledgeType.MARKDOWN,
+                  title: 'Notes',
+                  source: { origin: 'human' },
+                  location: { store: 'inline', content: 'x' },
+                },
+                deps,
+              ),
+            );
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        expect(await repos.agents.get(agent.id)).toBeNull();
+        expect(await repos.tasks.get(task.id)).toBeNull();
+        expect(await repos.agents.listByProject(project.id)).toHaveLength(0);
+        expect(await repos.tasks.listByProject(project.id)).toHaveLength(0);
+        expect(await repos.knowledge.listByProject(project.id)).toHaveLength(0);
+        // The pre-transaction write is untouched.
+        expect(await repos.projects.get(project.id)).not.toBeNull();
+      });
+
+      it('3. restores updates when the transaction fails', async () => {
+        const project = await seedProject('AiWow');
+        const agent = await seedAgent(project, 'ux');
+        const task = await seedTask(project, 'Original title', { assignedAgentId: agent.id });
+
+        await expect(
+          uow.run(async (tx) => {
+            await tx.projects.put({ ...project, name: 'Renamed', status: ProjectStatus.ARCHIVED });
+            await tx.agents.put({ ...agent, name: 'Renamed Agent' });
+            await tx.tasks.put({ ...task, title: 'Renamed title', status: TaskStatus.DONE });
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        const rolledBackProject = await repos.projects.get(project.id);
+        expect(rolledBackProject?.name).toBe('AiWow');
+        expect(rolledBackProject?.status).toBe(ProjectStatus.ACTIVE);
+        expect((await repos.agents.get(agent.id))?.name).toBe(agent.name);
+        const rolledBackTask = await repos.tasks.get(task.id);
+        expect(rolledBackTask?.title).toBe('Original title');
+        expect(rolledBackTask?.status).toBe(TaskStatus.BACKLOG);
+      });
+
+      it('4. restores deletes when the transaction fails', async () => {
+        const project = await seedProject('AiWow');
+        const agent = await seedAgent(project, 'ux');
+        const task = await seedTask(project, 'Kept', { assignedAgentId: agent.id });
+
+        await expect(
+          uow.run(async (tx) => {
+            expect(await tx.agents.delete(agent.id)).toBe(true);
+            expect(await tx.tasks.delete(task.id)).toBe(true);
+            // Gone as far as the transaction is concerned...
+            expect(await tx.agents.get(agent.id)).toBeNull();
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        // ...and back afterwards, byte for byte.
+        expect(await repos.agents.get(agent.id)).toEqual(agent);
+        expect(await repos.tasks.get(task.id)).toEqual(task);
+        expect(await repos.agents.listByProject(project.id)).toHaveLength(1);
+        expect(await repos.tasks.listByProject(project.id)).toHaveLength(1);
+      });
+
+      it('5. rolls back atomically across several repository types', async () => {
+        // Project update + Task create + Agent delete. One of them throws, so
+        // all three must be back where they started.
+        const project = await seedProject('AiWow');
+        const doomedAgent = await seedAgent(project, 'qa');
+        const newTask = createTask({ projectId: project.id, title: 'Never created' }, deps);
+
+        await expect(
+          uow.run(async (tx) => {
+            await tx.projects.put({ ...project, description: 'edited' });
+            await tx.tasks.put(newTask);
+            await tx.agents.delete(doomedAgent.id);
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        expect((await repos.projects.get(project.id))?.description).toBe('');
+        expect(await repos.tasks.get(newTask.id)).toBeNull();
+        expect(await repos.agents.get(doomedAgent.id)).toEqual(doomedAgent);
+      });
+
+      it('rolls back blob writes too', async () => {
+        const project = await seedProject('AiWow');
+        let ref: Awaited<ReturnType<typeof repos.blobs.write>> | undefined;
+
+        await expect(
+          uow.run(async (tx) => {
+            ref = await tx.blobs.write({ projectId: project.id, name: 'prd.md' }, '# PRD');
+            expect(await tx.blobs.read(ref)).toBe('# PRD');
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        expect(ref).toBeDefined();
+        await expect(repos.blobs.read(ref!)).rejects.toThrow();
+      });
+
+      it('rethrows the original error unchanged', async () => {
+        const boom = new Boom();
+        await expect(uow.run(async () => Promise.reject(boom))).rejects.toBe(boom);
+      });
+
+      it('leaves earlier committed transactions alone when a later one fails', async () => {
+        const project = await seedProject('AiWow');
+        const kept = createTask({ projectId: project.id, title: 'Committed' }, deps);
+        await uow.run(async (tx) => {
+          await tx.tasks.put(kept);
+        });
+
+        await expect(
+          uow.run(async (tx) => {
+            await tx.tasks.put(createTask({ projectId: project.id, title: 'Discarded' }, deps));
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        const remaining = await repos.tasks.listByProject(project.id);
+        expect(remaining.map((t) => t.title)).toEqual(['Committed']);
+      });
+
+      it('keeps working after a rolled-back transaction', async () => {
+        const project = await seedProject('AiWow');
+        await expect(
+          uow.run(async () => {
+            throw new Boom();
+          }),
+        ).rejects.toThrow(Boom);
+
+        const after = createTask({ projectId: project.id, title: 'After the failure' }, deps);
+        await uow.run(async (tx) => {
+          await tx.tasks.put(after);
+        });
+        expect(await repos.tasks.get(after.id)).not.toBeNull();
       });
     });
 
