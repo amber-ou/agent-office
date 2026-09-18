@@ -190,16 +190,21 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
 
     // Sandboxed runs go through bubblewrap; `env` is handed over by the spec,
     // never inherited, so the Office's own secrets stay out of the child.
-    const sandboxed = request.sandbox !== undefined;
-    const command = sandboxed ? this.sandboxCommand : this.command;
-    const argv = sandboxed ? [...buildSandboxArgv(request.sandbox!), this.command, ...args] : args;
+    const sandbox = request.sandbox;
+    const launch = sandbox
+      ? {
+          command: this.sandboxCommand,
+          argv: [...buildSandboxArgv(sandbox), this.command, ...args],
+        }
+      : windowsSafeLaunch(this.command, args);
 
-    const child = this.spawn(command, argv, {
+    const child = this.spawn(launch.command, launch.argv, {
       cwd: request.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       // bwrap sets the child's own environment with --setenv; passing ours
       // through as well would defeat the point.
-      ...(sandboxed ? { env: {} } : {}),
+      ...(sandbox ? { env: {} } : {}),
+      ...('verbatim' in launch && launch.verbatim ? { windowsVerbatimArguments: true } : {}),
     });
 
     let stdout = '';
@@ -236,7 +241,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
         sessionId: request.sessionId,
         ok: false,
         result: '',
-        error: `could not start ${command}: ${error.message}`,
+        error: `could not start ${launch.command}: ${error.message}`,
       });
     });
 
@@ -341,6 +346,34 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
       listener(outcome);
     }
   }
+}
+
+/**
+ * Launching on Windows, where `claude` is a `.cmd` shim.
+ *
+ * Node refuses to spawn a `.cmd` directly, and `shell: true` would hand our
+ * arguments — one of which is a JSON document — to cmd.exe's own quoting
+ * rules. So the command line is built and quoted here and passed verbatim.
+ *
+ * UNVERIFIED: no Windows host was available to run this on.
+ */
+function windowsSafeLaunch(
+  command: string,
+  args: readonly string[],
+): { command: string; argv: string[]; verbatim?: true } {
+  if (process.platform !== 'win32') {
+    return { command, argv: [...args] };
+  }
+  const line = [command, ...args].map(quoteForCmd).join(' ');
+  return {
+    command: process.env['COMSPEC'] ?? 'cmd.exe',
+    argv: ['/d', '/s', '/c', `"${line}"`],
+    verbatim: true,
+  };
+}
+
+function quoteForCmd(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 /**

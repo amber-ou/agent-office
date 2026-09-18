@@ -52,6 +52,8 @@ import { ClaudeCliRuntime, inheritedEnv, resolveBindPath } from '../../../runtim
 import type { ReviewNote } from '../../../storage/src/index.js';
 import { assembleContext } from './contextAssembly.js';
 import type { OfficeStorage } from './officeStorage.js';
+import type { RunMode } from './runMode.js';
+import { decideRunMode, readWindowsConsent } from './runMode.js';
 
 const DEPS = { ids: uuidIdGenerator, clock: systemClock };
 
@@ -127,12 +129,13 @@ export class TaskRunner extends EventEmitter {
    * leaves the task exactly as it was.
    */
   async run(taskIdRaw: string, activeProjectId: string | undefined): Promise<RunStartedResult> {
-    const { task, agent, dependencies } = await this.eligible(taskIdRaw, activeProjectId);
+    const { task, agent, dependencies, mode } = await this.eligible(taskIdRaw, activeProjectId);
     const { bundle, contents } = await assembleContext(this.storage, task);
     return this.dispatch({
       task,
       agent,
       dependencies,
+      mode,
       request: { context: bundle, contents },
     });
   }
@@ -156,7 +159,7 @@ export class TaskRunner extends EventEmitter {
     if (!body) {
       throw new Error('review feedback must not be empty');
     }
-    const { task, agent, dependencies } = await this.eligible(taskIdRaw, activeProjectId);
+    const { task, agent, dependencies, mode } = await this.eligible(taskIdRaw, activeProjectId);
     if (task.status !== 'review') {
       throw new Error(`only a task in review can be revised (this one is "${task.status}")`);
     }
@@ -185,6 +188,7 @@ export class TaskRunner extends EventEmitter {
       task,
       agent,
       dependencies,
+      mode,
       note,
       request: {
         context: bundle,
@@ -205,7 +209,7 @@ export class TaskRunner extends EventEmitter {
   private async eligible(
     taskIdRaw: string,
     activeProjectId: string | undefined,
-  ): Promise<{ task: Task; agent: AgentDefinition; dependencies: Task[] }> {
+  ): Promise<{ task: Task; agent: AgentDefinition; dependencies: Task[]; mode: RunMode }> {
     if (this.live) {
       throw new Error('another task is already running');
     }
@@ -237,20 +241,22 @@ export class TaskRunner extends EventEmitter {
       throw new Error(`agent not found: ${task.assignedAgentId}`);
     }
 
-    // Fail closed. No sandbox, no run — there is no unsandboxed fallback,
-    // because the fallback is precisely the thing the sandbox exists to stop.
-    const sandbox = await this.runtime().probeSandbox();
-    if (!sandbox.ok) {
-      throw new Error(
-        `the run sandbox is unavailable, so no task can be dispatched: ${sandbox.detail ?? 'unknown reason'}`,
-      );
+    // Fail closed on the platforms that sandbox: no namespace, no run. On
+    // Windows there is no namespace to fail, so the operator accepts the risk
+    // once instead — see runMode.ts.
+    const sandbox =
+      process.platform === 'win32' ? { ok: false } : await this.runtime().probeSandbox();
+    const decision = decideRunMode({
+      platform: process.platform,
+      windowsConsent: readWindowsConsent(this.storage.dataRoot),
+      sandboxOk: sandbox.ok,
+      ...(sandbox.detail === undefined ? {} : { sandboxDetail: sandbox.detail }),
+      hasToken: runCredential() !== undefined,
+    });
+    if (decision.refusal) {
+      throw new Error(decision.refusal);
     }
-    if (!runCredential()) {
-      throw new Error(
-        'no CLAUDE_CODE_OAUTH_TOKEN in the environment: a sandboxed run cannot reach the login in your home directory, so the token has to be provided to Agent Office',
-      );
-    }
-    return { task, agent, dependencies };
+    return { task, agent, dependencies, mode: decision.mode };
   }
 
   /**
@@ -296,6 +302,7 @@ export class TaskRunner extends EventEmitter {
     task: Task;
     agent: AgentDefinition;
     dependencies: Task[];
+    mode: RunMode;
     note?: ReviewNote;
     request: Pick<ClaudeStartRunRequest, 'context' | 'contents' | 'resume' | 'prompt'>;
   }): Promise<RunStartedResult> {
@@ -347,7 +354,11 @@ export class TaskRunner extends EventEmitter {
       // A run may not reach any agent's own files through Claude's file tools.
       // The sandbox is what removes those paths; this is the second line.
       denyPaths: [this.storage.agentFiles.root],
-      sandbox,
+      // Shell mode has no namespace to build. It also keeps the operator's own
+      // Claude configuration, because that is where their login is and there is
+      // nothing hiding it from the run — the cost is that runs on Windows share
+      // one transcript store, which the notice they accepted says.
+      ...(input.mode === 'sandboxed' ? { sandbox } : {}),
     };
     try {
       const result = await this.runtime().startRun(request);
