@@ -42,6 +42,39 @@ interface AgentDetailMessage {
   }>;
 }
 
+interface ProjectDetailMessage {
+  type: 'projectDetail';
+  project: {
+    id: string;
+    name: string;
+    description: string;
+    status: string;
+    workspacePaths: string[];
+    defaultModel?: string;
+  };
+  memberships: Array<{ id: string; projectId: string; agentId: string }>;
+  knowledge: Array<{
+    id: string;
+    projectId: string;
+    title: string;
+    type: string;
+    tags: string[];
+    content?: string;
+  }>;
+  tasks: Array<{
+    id: string;
+    projectId: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    assignedAgentId?: string;
+    parentTaskId?: string;
+    dependencies: string[];
+    inputs: Array<{ kind: string; value?: string; knowledgeId?: string; path?: string }>;
+  }>;
+}
+
 interface OfficeStateMessage {
   type: 'officeState';
   storage: { ready: boolean; schemaVersion: number; databasePath?: string; error?: string };
@@ -75,6 +108,13 @@ class OfficeClient {
   /** Send a command and resolve with the agent configuration it produces. */
   async sendForDetail(message: Record<string, unknown>): Promise<AgentDetailMessage> {
     const next = this.next<AgentDetailMessage>('agentDetail');
+    this.socket.send(JSON.stringify(message));
+    return next;
+  }
+
+  /** Send a command and resolve with the project workspace it produces. */
+  async sendForProject(message: Record<string, unknown>): Promise<ProjectDetailMessage> {
+    const next = this.next<ProjectDetailMessage>('projectDetail');
     this.socket.send(JSON.stringify(message));
     return next;
   }
@@ -336,6 +376,162 @@ describe('Agent Office runtime smoke test', () => {
       });
       expect(afterDuplicate.skills).toHaveLength(1);
       expect(afterDuplicate.skills[0]!.name).toBe('Run an interview');
+    } finally {
+      client.close();
+    }
+  });
+
+  it('prepares a whole project over the wire and finds it again after a restart', async () => {
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+
+    const withProject = await client.send({ type: 'createProject', name: 'AiWow' });
+    const projectId = withProject.projects[0]!.id;
+    const withAgent = await client.send({
+      type: 'createAgent',
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+    });
+    const agentId = withAgent.agents[0]!.id;
+    await client.send({ type: 'addAgentToProject', projectId, agentId });
+
+    // 1. Open the workspace and give the project its own context.
+    const opened = await client.sendForProject({ type: 'requestProjectDetail', projectId });
+    expect(opened.knowledge).toEqual([]);
+    expect(opened.tasks).toEqual([]);
+
+    const configured = await client.sendForProject({
+      type: 'updateProject',
+      projectId,
+      description: 'Onboarding redesign',
+      workspacePaths: ['/srv/aiwow'],
+      defaultModel: 'claude-opus-5',
+    });
+    expect(configured.project.description).toBe('Onboarding redesign');
+
+    // 2. Project knowledge.
+    const withKnowledge = await client.sendForProject({
+      type: 'createProjectKnowledge',
+      projectId,
+      title: 'Brand voice',
+      knowledgeType: 'design_system',
+      content: 'Plain and direct.',
+      tags: ['brand'],
+    });
+    expect(withKnowledge.knowledge).toHaveLength(1);
+    const knowledgeId = withKnowledge.knowledge[0]!.id;
+
+    // 3. Many small tasks, most of them unassigned.
+    let workspace = withKnowledge;
+    for (const title of ['Research', 'Draft the copy', 'Review the copy']) {
+      workspace = await client.sendForProject({ type: 'createTask', projectId, title });
+    }
+    expect(workspace.tasks).toHaveLength(3);
+    expect(workspace.tasks.every((t) => t.assignedAgentId === undefined)).toBe(true);
+
+    const research = workspace.tasks.find((t) => t.title === 'Research')!;
+    const draft = workspace.tasks.find((t) => t.title === 'Draft the copy')!;
+    const review = workspace.tasks.find((t) => t.title === 'Review the copy')!;
+
+    // 4. Detail, dependencies, a decomposition parent and an input reference.
+    const edited = await client.sendForProject({
+      type: 'updateTask',
+      taskId: draft.id,
+      description: 'Done when the three screens read in one voice.',
+      priority: 'high',
+      parentTaskId: review.id,
+      dependencies: [research.id],
+      inputs: [
+        { kind: 'projectKnowledge', knowledgeId },
+        { kind: 'text', value: 'Under 40 words.' },
+      ],
+    });
+    const editedDraft = edited.tasks.find((t) => t.id === draft.id)!;
+    expect(editedDraft.dependencies).toEqual([research.id]);
+    expect(editedDraft.parentTaskId).toBe(review.id);
+    expect(editedDraft.inputs).toHaveLength(2);
+
+    // 5. Assignment, and a status move the domain refuses.
+    const assigned = await client.sendForProject({ type: 'assignTask', taskId: draft.id, agentId });
+    expect(assigned.tasks.find((t) => t.id === draft.id)!.assignedAgentId).toBe(agentId);
+
+    await client.sendForProject({ type: 'setTaskStatus', taskId: draft.id, status: 'todo' });
+    const refused = await client.sendForProject({
+      type: 'setTaskStatus',
+      taskId: draft.id,
+      status: 'in_progress',
+    });
+    // Research is not done, so the move did not happen — and the workspace that
+    // comes back shows what is really stored.
+    expect(refused.tasks.find((t) => t.id === draft.id)!.status).toBe('todo');
+
+    // 6. Close the office.
+    client.close();
+    server.stop();
+    closeOfficeStorage();
+
+    // 7. Reopen: new server, new client, same workspace.
+    setOfficeDataRoot(dataRoot);
+    const restarted = await startServer();
+    const reopened = await OfficeClient.connect(restarted.port, restarted.token);
+    try {
+      const detail = await reopened.sendForProject({ type: 'requestProjectDetail', projectId });
+      expect(detail.project.description).toBe('Onboarding redesign');
+      expect(detail.project.workspacePaths).toEqual(['/srv/aiwow']);
+      expect(detail.project.defaultModel).toBe('claude-opus-5');
+
+      expect(detail.knowledge).toHaveLength(1);
+      expect(detail.knowledge[0]!.title).toBe('Brand voice');
+      expect(detail.knowledge[0]!.content).toBe('Plain and direct.');
+      expect(detail.knowledge[0]!.projectId).toBe(projectId);
+
+      expect(detail.tasks).toHaveLength(3);
+      const storedDraft = detail.tasks.find((t) => t.id === draft.id)!;
+      expect(storedDraft.description).toBe('Done when the three screens read in one voice.');
+      expect(storedDraft.priority).toBe('high');
+      expect(storedDraft.status).toBe('todo');
+      expect(storedDraft.assignedAgentId).toBe(agentId);
+      expect(storedDraft.parentTaskId).toBe(review.id);
+      expect(storedDraft.dependencies).toEqual([research.id]);
+      expect(storedDraft.inputs).toEqual([
+        { kind: 'projectKnowledge', knowledgeId },
+        { kind: 'text', value: 'Under 40 words.' },
+      ]);
+      expect(detail.tasks.filter((t) => t.assignedAgentId === undefined)).toHaveLength(2);
+
+      // The agent's own configuration was never touched by any of it.
+      const agentDetail = await reopened.sendForDetail({ type: 'requestAgentDetail', agentId });
+      expect(agentDetail.skills).toEqual([]);
+      expect(agentDetail.knowledge).toEqual([]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('refuses to assign a task to an agent outside the project', async () => {
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+    try {
+      const withProject = await client.send({ type: 'createProject', name: 'AiWow' });
+      const projectId = withProject.projects[0]!.id;
+      const withAgent = await client.send({
+        type: 'createAgent',
+        name: 'Outsider',
+        role: 'qa',
+        provider: 'claude',
+      });
+      const agentId = withAgent.agents[0]!.id;
+      await client.sendForProject({ type: 'requestProjectDetail', projectId });
+      const withTask = await client.sendForProject({
+        type: 'createTask',
+        projectId,
+        title: 'Draft the copy',
+      });
+      const taskId = withTask.tasks[0]!.id;
+
+      const refused = await client.sendForProject({ type: 'assignTask', taskId, agentId });
+      expect(refused.tasks[0]!.assignedAgentId).toBeUndefined();
     } finally {
       client.close();
     }

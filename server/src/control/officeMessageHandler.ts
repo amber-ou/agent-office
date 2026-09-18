@@ -17,6 +17,8 @@ import type {
   AgentDetail,
   ClientMessage,
   OfficeState,
+  OfficeTaskInput,
+  ProjectDetail,
   ServerMessage,
 } from '../../../core/src/messages.js';
 import type {
@@ -25,12 +27,16 @@ import type {
   Project,
   ProjectAgent,
   ProjectId,
+  ProjectStatus,
   Skill,
   SkillKind,
   Task,
+  TaskInput,
+  TaskPriority,
+  TaskStatus,
 } from '../../../domain/src/index.js';
-import { asProjectId } from '../../../domain/src/index.js';
-import type { AgentKnowledgeView } from './officeService.js';
+import { asOutputId, asProjectId, asProjectKnowledgeId } from '../../../domain/src/index.js';
+import type { AgentKnowledgeView, ProjectKnowledgeView } from './officeService.js';
 import { OfficeService } from './officeService.js';
 import { getOfficeStorage, officeStorageStatus } from './officeStorage.js';
 
@@ -51,6 +57,16 @@ const OFFICE_CLIENT_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'createAgentKnowledge',
   'updateAgentKnowledge',
   'deleteAgentKnowledge',
+  'requestProjectDetail',
+  'updateProject',
+  'createProjectKnowledge',
+  'updateProjectKnowledge',
+  'deleteProjectKnowledge',
+  'updateTask',
+  'assignTask',
+  'unassignTask',
+  'setTaskStatus',
+  'deleteTask',
 ]);
 
 export function isOfficeClientMessage(type: unknown): boolean {
@@ -73,6 +89,8 @@ export class OfficeSession {
   private activeProjectId: ProjectId | undefined;
   /** Which agent's configuration this window has open. Per-connection UI state. */
   private selectedAgentId: string | undefined;
+  /** Which project workspace this window has open. Also per-connection. */
+  private openProjectId: string | undefined;
 
   async handle(message: ClientMessage, send: Send): Promise<void> {
     const storage = getOfficeStorage();
@@ -136,6 +154,10 @@ export class OfficeSession {
             title: message.title,
             description: message.description,
             assignedAgentId: message.assignedAgentId,
+            priority: message.priority as TaskPriority | undefined,
+            parentTaskId: message.parentTaskId,
+            dependencies: message.dependencies,
+            inputs: message.inputs?.map(toTaskInput),
           });
           break;
 
@@ -226,6 +248,91 @@ export class OfficeSession {
           await this.sendAgentDetail(service, send);
           return;
 
+        // ── Project workspace ──
+        // These change one project and answer with its workspace. Tasks and
+        // memberships also appear in the office snapshot, so both are sent.
+
+        case 'requestProjectDetail':
+          this.openProjectId = message.projectId;
+          await this.sendProjectDetail(service, send);
+          return;
+
+        case 'updateProject': {
+          const project = await service.updateProject({
+            projectId: message.projectId,
+            name: message.name,
+            description: message.description,
+            status: message.status as ProjectStatus | undefined,
+            workspacePaths: message.workspacePaths,
+            defaultProvider: message.defaultProvider,
+            defaultModel: message.defaultModel,
+          });
+          // The workspace and the project list both change, and both are sent
+          // by the shared tail below.
+          this.openProjectId = project.id;
+          break;
+        }
+
+        case 'createProjectKnowledge':
+          await service.createProjectKnowledge({
+            projectId: message.projectId,
+            title: message.title,
+            knowledgeType: message.knowledgeType as KnowledgeType,
+            content: message.content,
+            tags: message.tags,
+          });
+          this.openProjectId = message.projectId;
+          await this.sendProjectDetail(service, send);
+          return;
+
+        case 'updateProjectKnowledge':
+          await service.updateProjectKnowledge({
+            knowledgeId: message.knowledgeId,
+            title: message.title,
+            knowledgeType: message.knowledgeType as KnowledgeType | undefined,
+            content: message.content,
+            tags: message.tags,
+          });
+          await this.sendProjectDetail(service, send);
+          return;
+
+        case 'deleteProjectKnowledge':
+          await service.deleteProjectKnowledge(message.knowledgeId);
+          await this.sendProjectDetail(service, send);
+          return;
+
+        case 'updateTask':
+          await service.updateTask({
+            taskId: message.taskId,
+            title: message.title,
+            description: message.description,
+            priority: message.priority as TaskPriority | undefined,
+            parentTaskId: message.parentTaskId,
+            clearParentTask: message.clearParentTask,
+            dependencies: message.dependencies,
+            inputs: message.inputs?.map(toTaskInput),
+          });
+          break;
+
+        case 'assignTask':
+          await service.assignTask({ taskId: message.taskId, agentId: message.agentId });
+          break;
+
+        case 'unassignTask':
+          await service.unassignTask(message.taskId);
+          break;
+
+        case 'setTaskStatus':
+          await service.setTaskStatus({
+            taskId: message.taskId,
+            status: message.status as TaskStatus,
+          });
+          break;
+
+        case 'deleteTask':
+          await service.deleteTask(message.taskId);
+          break;
+
         default:
           return;
       }
@@ -245,6 +352,11 @@ export class OfficeSession {
       }
     }
 
+    // Task and membership changes move the office snapshot as well as the
+    // workspace, so both are refreshed.
+    if (isProjectWorkspaceMessage(message.type)) {
+      await this.sendProjectDetail(service, send);
+    }
     send(asWire(await this.buildState(service)));
   }
 
@@ -273,6 +385,27 @@ export class OfficeSession {
         agent: toOfficeAgent(detail.agent),
         skills: detail.skills.map(toOfficeSkill),
         knowledge: detail.knowledge.map(toOfficeAgentKnowledge),
+      }),
+    );
+  }
+
+  /** Push the open project's workspace, if one is open and still exists. */
+  private async sendProjectDetail(service: OfficeService, send: Send): Promise<void> {
+    if (!this.openProjectId) {
+      return;
+    }
+    const detail = await service.projectDetail(this.openProjectId);
+    if (!detail) {
+      this.openProjectId = undefined;
+      return;
+    }
+    send(
+      asWire({
+        type: 'projectDetail',
+        project: toOfficeProjectDetail(detail.project),
+        memberships: detail.memberships.map(toOfficeMembership),
+        knowledge: detail.knowledge.map(toOfficeProjectKnowledge),
+        tasks: detail.tasks.map(toOfficeTask),
       }),
     );
   }
@@ -351,6 +484,9 @@ function toOfficeTask(task: Task): OfficeState['tasks'][number] {
     status: task.status,
     priority: task.priority,
     ...(task.assignedAgentId ? { assignedAgentId: task.assignedAgentId } : {}),
+    ...(task.parentTaskId ? { parentTaskId: task.parentTaskId } : {}),
+    dependencies: task.dependencies,
+    inputs: task.inputs.map(toOfficeTaskInput),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
@@ -401,4 +537,106 @@ function toOfficeAgentKnowledge(view: AgentKnowledgeView): AgentDetail['knowledg
     createdAt: view.item.createdAt,
     updatedAt: view.item.updatedAt,
   };
+}
+
+/**
+ * Messages the open workspace must be re-derived for.
+ *
+ * The knowledge ones answer with the workspace alone and return before the
+ * shared tail, so they appear here only for the error path — a rejected edit
+ * still has to leave the client showing what is really stored.
+ */
+const PROJECT_WORKSPACE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  'updateProject',
+  'createProjectKnowledge',
+  'updateProjectKnowledge',
+  'deleteProjectKnowledge',
+  'createTask',
+  'updateTask',
+  'assignTask',
+  'unassignTask',
+  'setTaskStatus',
+  'deleteTask',
+  'addAgentToProject',
+  'removeAgentFromProject',
+]);
+
+function isProjectWorkspaceMessage(type: string): boolean {
+  return PROJECT_WORKSPACE_MESSAGE_TYPES.has(type);
+}
+
+function toOfficeProjectDetail(project: Project): ProjectDetail['project'] {
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    workspacePaths: project.settings.workspacePaths,
+    ...(project.settings.defaultProvider === undefined
+      ? {}
+      : { defaultProvider: project.settings.defaultProvider }),
+    ...(project.settings.defaultModel === undefined
+      ? {}
+      : { defaultModel: project.settings.defaultModel }),
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+function toOfficeProjectKnowledge(view: ProjectKnowledgeView): ProjectDetail['knowledge'][number] {
+  return {
+    id: view.item.id,
+    projectId: view.item.projectId,
+    type: view.item.type,
+    title: view.item.title,
+    tags: view.item.tags,
+    contentReadable: view.contentReadable,
+    ...(view.content === undefined ? {} : { content: view.content }),
+    createdAt: view.item.createdAt,
+    updatedAt: view.item.updatedAt,
+  };
+}
+
+/**
+ * TaskInput is a discriminated union in the domain and a flat record on the
+ * wire, because a oneOf of nested objects is not something the generator models
+ * usefully. These two functions are the whole of the difference.
+ */
+function toOfficeTaskInput(input: TaskInput): OfficeTaskInput {
+  switch (input.kind) {
+    case 'text':
+      return { kind: 'text', value: input.value };
+    case 'projectKnowledge':
+      return { kind: 'projectKnowledge', knowledgeId: input.knowledgeId };
+    case 'output':
+      return { kind: 'output', outputId: input.outputId };
+    case 'file':
+      return { kind: 'file', path: input.path };
+  }
+}
+
+function toTaskInput(input: OfficeTaskInput): TaskInput {
+  switch (input.kind) {
+    case 'text':
+      return { kind: 'text', value: input.value ?? '' };
+    case 'projectKnowledge':
+      // Project knowledge only: an agent's own knowledge is never a task input.
+      return {
+        kind: 'projectKnowledge',
+        knowledgeId: asProjectKnowledgeId(requireField(input.knowledgeId, 'knowledgeId')),
+      };
+    case 'output':
+      return { kind: 'output', outputId: asOutputId(requireField(input.outputId, 'outputId')) };
+    case 'file':
+      return { kind: 'file', path: requireField(input.path, 'path') };
+    default:
+      throw new Error(`unknown task input kind: ${input.kind}`);
+  }
+}
+
+function requireField(value: string | undefined, name: string): string {
+  if (value === undefined) {
+    throw new Error(`task input is missing ${name}`);
+  }
+  return value;
 }

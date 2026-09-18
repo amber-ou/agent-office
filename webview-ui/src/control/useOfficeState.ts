@@ -15,10 +15,14 @@ import type {
   OfficeAgentKnowledge,
   OfficeMembership,
   OfficeProject,
+  OfficeProjectDetail,
+  OfficeProjectKnowledge,
   OfficeSkill,
   OfficeState,
   OfficeStorageStatus,
   OfficeTask,
+  OfficeTaskInput,
+  ProjectDetail,
 } from '../../../core/src/messages.js';
 import { transport } from '../transport/index.js';
 
@@ -27,6 +31,14 @@ export interface AgentDetailView {
   agent: OfficeAgent;
   skills: OfficeSkill[];
   knowledge: OfficeAgentKnowledge[];
+}
+
+/** The workspace of the one project this window has open, if any. */
+export interface ProjectDetailView {
+  project: OfficeProjectDetail;
+  memberships: OfficeMembership[];
+  knowledge: OfficeProjectKnowledge[];
+  tasks: OfficeTask[];
 }
 
 export interface OfficeView {
@@ -38,6 +50,8 @@ export interface OfficeView {
   activeProjectId?: string;
   /** The open agent's configuration, or null when none is open. */
   agentDetail: AgentDetailView | null;
+  /** The open project's workspace, or null when none is open. */
+  projectDetail: ProjectDetailView | null;
   /** Last failed operation, cleared by the next successful snapshot. */
   error: string | null;
 }
@@ -49,6 +63,7 @@ const EMPTY: OfficeView = {
   memberships: [],
   tasks: [],
   agentDetail: null,
+  projectDetail: null,
   error: null,
 };
 
@@ -85,6 +100,42 @@ export interface KnowledgeFields {
   tags?: string[];
 }
 
+export interface UpdateProjectFields {
+  name?: string;
+  description?: string;
+  status?: string;
+  workspacePaths?: string[];
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
+export interface ProjectKnowledgeFields {
+  title: string;
+  knowledgeType: string;
+  content: string;
+  tags?: string[];
+}
+
+export interface TaskFields {
+  title?: string;
+  description?: string;
+  priority?: string;
+  parentTaskId?: string;
+  clearParentTask?: boolean;
+  dependencies?: string[];
+  inputs?: OfficeTaskInput[];
+}
+
+export interface CreateTaskFields {
+  title: string;
+  description?: string;
+  assignedAgentId?: string;
+  priority?: string;
+  parentTaskId?: string;
+  dependencies?: string[];
+  inputs?: OfficeTaskInput[];
+}
+
 export interface OfficeCommands {
   refresh(): void;
   createProject(name: string, description?: string): void;
@@ -92,7 +143,18 @@ export interface OfficeCommands {
   createAgent(fields: CreateAgentFields): void;
   addAgentToProject(projectId: string, agentId: string): void;
   removeAgentFromProject(projectId: string, agentId: string): void;
-  createTask(projectId: string, title: string, description?: string): void;
+  createTask(projectId: string, fields: CreateTaskFields): void;
+  openProject(projectId: string): void;
+  closeProject(): void;
+  updateProject(projectId: string, fields: UpdateProjectFields): void;
+  createProjectKnowledge(projectId: string, fields: ProjectKnowledgeFields): void;
+  updateProjectKnowledge(knowledgeId: string, fields: Partial<ProjectKnowledgeFields>): void;
+  deleteProjectKnowledge(knowledgeId: string): void;
+  updateTask(taskId: string, fields: TaskFields): void;
+  assignTask(taskId: string, agentId: string): void;
+  unassignTask(taskId: string): void;
+  setTaskStatus(taskId: string, status: string): void;
+  deleteTask(taskId: string): void;
   openAgent(agentId: string): void;
   closeAgent(): void;
   updateAgent(agentId: string, fields: UpdateAgentFields): void;
@@ -123,6 +185,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
           // The office snapshot says nothing about the open agent, so the
           // configuration surface keeps whatever the last agentDetail put there.
           agentDetail: current.agentDetail,
+          projectDetail: current.projectDetail,
           // A fresh snapshot is the truth; any earlier failure is now history.
           error: null,
         }));
@@ -134,6 +197,18 @@ export function useOfficeState(): OfficeView & OfficeCommands {
             agent: detail.agent,
             skills: detail.skills,
             knowledge: detail.knowledge,
+          },
+          error: null,
+        }));
+      } else if (message.type === 'projectDetail') {
+        const detail = message as ProjectDetail;
+        setView((current) => ({
+          ...current,
+          projectDetail: {
+            project: detail.project,
+            memberships: detail.memberships,
+            knowledge: detail.knowledge,
+            tasks: detail.tasks,
           },
           error: null,
         }));
@@ -184,13 +259,101 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     transport.send({ type: 'removeAgentFromProject', projectId, agentId });
   }, []);
 
-  const createTask = useCallback((projectId: string, title: string, description?: string) => {
+  const createTask = useCallback((projectId: string, fields: CreateTaskFields) => {
     transport.send({
       type: 'createTask',
       projectId,
-      title,
-      ...(description ? { description } : {}),
+      title: fields.title,
+      ...optional('description', fields.description),
+      ...optional('assignedAgentId', fields.assignedAgentId),
+      ...optional('priority', fields.priority),
+      ...optional('parentTaskId', fields.parentTaskId),
+      ...optional('dependencies', fields.dependencies),
+      ...optional('inputs', fields.inputs),
     });
+  }, []);
+
+  const openProject = useCallback((projectId: string) => {
+    transport.send({ type: 'requestProjectDetail', projectId });
+  }, []);
+
+  const closeProject = useCallback(() => {
+    setView((current) => ({ ...current, projectDetail: null }));
+  }, []);
+
+  const updateProject = useCallback((projectId: string, fields: UpdateProjectFields) => {
+    transport.send({
+      type: 'updateProject',
+      projectId,
+      ...optional('name', fields.name),
+      ...optional('description', fields.description),
+      ...optional('status', fields.status),
+      ...optional('workspacePaths', fields.workspacePaths),
+      ...optional('defaultProvider', fields.defaultProvider),
+      ...optional('defaultModel', fields.defaultModel),
+    });
+  }, []);
+
+  const createProjectKnowledge = useCallback(
+    (projectId: string, fields: ProjectKnowledgeFields) => {
+      transport.send({
+        type: 'createProjectKnowledge',
+        projectId,
+        title: fields.title,
+        knowledgeType: fields.knowledgeType,
+        content: fields.content,
+        ...optional('tags', fields.tags),
+      });
+    },
+    [],
+  );
+
+  const updateProjectKnowledge = useCallback(
+    (knowledgeId: string, fields: Partial<ProjectKnowledgeFields>) => {
+      transport.send({
+        type: 'updateProjectKnowledge',
+        knowledgeId,
+        ...optional('title', fields.title),
+        ...optional('knowledgeType', fields.knowledgeType),
+        ...optional('content', fields.content),
+        ...optional('tags', fields.tags),
+      });
+    },
+    [],
+  );
+
+  const deleteProjectKnowledge = useCallback((knowledgeId: string) => {
+    transport.send({ type: 'deleteProjectKnowledge', knowledgeId });
+  }, []);
+
+  const updateTask = useCallback((taskId: string, fields: TaskFields) => {
+    transport.send({
+      type: 'updateTask',
+      taskId,
+      ...optional('title', fields.title),
+      ...optional('description', fields.description),
+      ...optional('priority', fields.priority),
+      ...optional('parentTaskId', fields.parentTaskId),
+      ...optional('clearParentTask', fields.clearParentTask),
+      ...optional('dependencies', fields.dependencies),
+      ...optional('inputs', fields.inputs),
+    });
+  }, []);
+
+  const assignTask = useCallback((taskId: string, agentId: string) => {
+    transport.send({ type: 'assignTask', taskId, agentId });
+  }, []);
+
+  const unassignTask = useCallback((taskId: string) => {
+    transport.send({ type: 'unassignTask', taskId });
+  }, []);
+
+  const setTaskStatus = useCallback((taskId: string, status: string) => {
+    transport.send({ type: 'setTaskStatus', taskId, status });
+  }, []);
+
+  const deleteTask = useCallback((taskId: string) => {
+    transport.send({ type: 'deleteTask', taskId });
   }, []);
 
   const openAgent = useCallback((agentId: string) => {
@@ -280,6 +443,17 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     addAgentToProject,
     removeAgentFromProject,
     createTask,
+    openProject,
+    closeProject,
+    updateProject,
+    createProjectKnowledge,
+    updateProjectKnowledge,
+    deleteProjectKnowledge,
+    updateTask,
+    assignTask,
+    unassignTask,
+    setTaskStatus,
+    deleteTask,
     openAgent,
     closeAgent,
     updateAgent,

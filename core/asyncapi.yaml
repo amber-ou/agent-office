@@ -122,6 +122,7 @@ components:
         - $ref: '#/components/schemas/OfficeState'
         - $ref: '#/components/schemas/OfficeError'
         - $ref: '#/components/schemas/AgentDetail'
+        - $ref: '#/components/schemas/ProjectDetail'
       discriminator: type
 
     ClientMessage:
@@ -165,6 +166,16 @@ components:
         - $ref: '#/components/schemas/CreateAgentKnowledge'
         - $ref: '#/components/schemas/UpdateAgentKnowledge'
         - $ref: '#/components/schemas/DeleteAgentKnowledge'
+        - $ref: '#/components/schemas/RequestProjectDetail'
+        - $ref: '#/components/schemas/UpdateProject'
+        - $ref: '#/components/schemas/CreateProjectKnowledge'
+        - $ref: '#/components/schemas/UpdateProjectKnowledge'
+        - $ref: '#/components/schemas/DeleteProjectKnowledge'
+        - $ref: '#/components/schemas/UpdateTask'
+        - $ref: '#/components/schemas/AssignTask'
+        - $ref: '#/components/schemas/UnassignTask'
+        - $ref: '#/components/schemas/SetTaskStatus'
+        - $ref: '#/components/schemas/DeleteTask'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -1343,7 +1354,8 @@ components:
     OfficeTask:
       type: object
       additionalProperties: false
-      required: [id, projectId, title, description, status, priority, createdAt, updatedAt]
+      required:
+        [id, projectId, title, description, status, priority, dependencies, inputs, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -1359,9 +1371,44 @@ components:
           type: string
         assignedAgentId:
           type: string
+        parentTaskId:
+          description: Decomposition parent. NOT an execution dependency.
+          type: string
+        dependencies:
+          description: Task ids this task cannot start before. NOT a hierarchy.
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
         createdAt:
           type: string
         updatedAt:
+          type: string
+
+    OfficeTaskInput:
+      description: |
+        One TaskInput, flattened. `kind` selects which of the remaining fields
+        carries the reference; the server rebuilds the domain union from it.
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+        value:
+          description: kind=text
+          type: string
+        knowledgeId:
+          description: kind=projectKnowledge — project knowledge only, never agent knowledge.
+          type: string
+        outputId:
+          description: kind=output
+          type: string
+        path:
+          description: kind=file
           type: string
 
     RequestOffice:
@@ -1464,6 +1511,18 @@ components:
           type: string
         assignedAgentId:
           type: string
+        priority:
+          type: string
+        parentTaskId:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
 
     # ── Agent configuration ────────────────────────────────────────
     # Everything an Agent permanently owns: its definition, its instructions,
@@ -1692,4 +1751,260 @@ components:
         type:
           const: deleteAgentKnowledge
         knowledgeId:
+          type: string
+
+    # ── Project workspace ──────────────────────────────────────────
+    # The temporary working context of ONE project: its definition, its
+    # members, its ProjectKnowledge and its Tasks. Nothing here touches an
+    # agent's permanent configuration (ADR 005).
+
+    ProjectDetail:
+      description: |
+        One project's whole workspace. Sent in reply to requestProjectDetail and
+        after every change to that project, its knowledge or its tasks.
+      type: object
+      additionalProperties: false
+      required: [type, project, memberships, knowledge, tasks]
+      properties:
+        type:
+          const: projectDetail
+        project:
+          $ref: '#/components/schemas/OfficeProjectDetail'
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeMembership'
+        knowledge:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeProjectKnowledge'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTask'
+
+    OfficeProjectDetail:
+      description: A project with the settings the office can edit.
+      type: object
+      additionalProperties: false
+      required: [id, name, description, status, workspacePaths, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        workspacePaths:
+          type: array
+          items:
+            type: string
+        defaultProvider:
+          type: string
+        defaultModel:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeProjectKnowledge:
+      description: |
+        Knowledge owned by one project. Never reachable from an agent's library:
+        the two are separate entities with separate repositories.
+      type: object
+      additionalProperties: false
+      required: [id, projectId, type, title, tags, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        content:
+          description: Resolved blob content. Absent when the reference cannot be read.
+          type: string
+        contentReadable:
+          type: boolean
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    RequestProjectDetail:
+      description: Open a project workspace. Omit projectId to close it.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestProjectDetail
+        projectId:
+          type: string
+
+    UpdateProject:
+      description: Edit a project's own definition and settings.
+      type: object
+      additionalProperties: false
+      required: [type, projectId]
+      properties:
+        type:
+          const: updateProject
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        workspacePaths:
+          type: array
+          items:
+            type: string
+        defaultProvider:
+          type: string
+        defaultModel:
+          type: string
+
+    CreateProjectKnowledge:
+      description: |
+        Add knowledge to a project. The only way project knowledge is created —
+        nothing is ingested automatically, and none of it ever reaches an agent's
+        own knowledge.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, title, knowledgeType, content]
+      properties:
+        type:
+          const: createProjectKnowledge
+        projectId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdateProjectKnowledge:
+      description: Edit project knowledge. The owning project cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: updateProjectKnowledge
+        knowledgeId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    DeleteProjectKnowledge:
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: deleteProjectKnowledge
+        knowledgeId:
+          type: string
+
+    UpdateTask:
+      description: |
+        Edit a task's own fields. Status and assignment have their own messages
+        because the domain guards them with transition rules.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: updateTask
+        taskId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        parentTaskId:
+          type: string
+        clearParentTask:
+          description: Detach this task from its decomposition parent.
+          type: boolean
+        dependencies:
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
+
+    AssignTask:
+      description: Assign a task to an agent that is a member of its project.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, agentId]
+      properties:
+        type:
+          const: assignTask
+        taskId:
+          type: string
+        agentId:
+          type: string
+
+    UnassignTask:
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: unassignTask
+        taskId:
+          type: string
+
+    SetTaskStatus:
+      description: Move a task through the status machine the domain defines.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, status]
+      properties:
+        type:
+          const: setTaskStatus
+        taskId:
+          type: string
+        status:
+          type: string
+
+    DeleteTask:
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: deleteTask
+        taskId:
           type: string

@@ -20,28 +20,43 @@ import type {
   Project,
   ProjectAgent,
   ProjectId,
+  ProjectKnowledge,
+  ProjectStatus,
   Repositories,
   ResourceRef,
   Skill,
   SkillKind,
   Task,
   TaskId,
+  TaskInput,
+  TaskPriority,
+  TaskStatus,
 } from '../../../domain/src/index.js';
 import {
   asAgentId,
   asAgentKnowledgeId,
   asProjectId,
+  asProjectKnowledgeId,
+  assertDependenciesValid,
   assertNotAlreadyMember,
+  assertParentValid,
+  assignTask as assignTaskToAgent,
   asSkillId,
+  asTaskId,
   createAgentDefinition,
   createAgentKnowledge as createAgentKnowledgeItem,
   createProject,
   createProjectAgent,
+  createProjectKnowledge as createProjectKnowledgeItem,
   createSkill as createSkillDefinition,
   createTask,
   systemClock,
+  transitionTask,
+  unassignTask as unassignTaskFromAgent,
   updateAgentDefinition,
   updateAgentKnowledge as updateAgentKnowledgeItem,
+  updateProject as updateProjectDefinition,
+  updateProjectKnowledge as updateProjectKnowledgeItem,
   updateSkill as updateSkillDefinition,
   uuidIdGenerator,
 } from '../../../domain/src/index.js';
@@ -84,6 +99,70 @@ export interface CreateTaskCommand {
   title: string;
   description?: string;
   assignedAgentId?: string;
+  priority?: TaskPriority;
+  parentTaskId?: string;
+  dependencies?: string[];
+  inputs?: TaskInput[];
+}
+
+export interface ProjectKnowledgeView {
+  item: ProjectKnowledge;
+  content?: string;
+  contentReadable: boolean;
+}
+
+export interface ProjectDetailView {
+  project: Project;
+  memberships: ProjectAgent[];
+  knowledge: ProjectKnowledgeView[];
+  tasks: Task[];
+}
+
+export interface UpdateProjectCommand {
+  projectId: string;
+  name?: string;
+  description?: string;
+  status?: ProjectStatus;
+  workspacePaths?: string[];
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
+export interface CreateProjectKnowledgeCommand {
+  projectId: string;
+  title: string;
+  knowledgeType: KnowledgeType;
+  content: string;
+  tags?: string[];
+}
+
+export interface UpdateProjectKnowledgeCommand {
+  knowledgeId: string;
+  title?: string;
+  knowledgeType?: KnowledgeType;
+  content?: string;
+  tags?: string[];
+}
+
+export interface UpdateTaskCommand {
+  taskId: string;
+  title?: string;
+  description?: string;
+  priority?: TaskPriority;
+  parentTaskId?: string;
+  clearParentTask?: boolean;
+  dependencies?: string[];
+  inputs?: TaskInput[];
+}
+
+export interface AssignTaskCommand {
+  taskId: string;
+  agentId: string;
+}
+
+export interface SetTaskStatusCommand {
+  taskId: string;
+  status: TaskStatus;
 }
 
 export class OfficeService {
@@ -196,7 +275,17 @@ export class OfficeService {
     if (!membership) {
       return false;
     }
-    return this.repos.projectAgents.delete(membership.id);
+    // A task assigned to someone who is no longer a member is an invalid
+    // ownership the domain would never let us create, so it is not one we may
+    // leave behind: the tasks are unassigned in the same transaction. A task
+    // already in progress refuses to be unassigned, which refuses the removal.
+    return this.storage.uow.run(async (repos) => {
+      const tasks = await repos.tasks.listByProject(projectId);
+      for (const task of tasks.filter((t) => t.assignedAgentId === agentId)) {
+        await repos.tasks.put(unassignTaskFromAgent(task, this.deps.clock));
+      }
+      return repos.projectAgents.delete(membership.id);
+    });
   }
 
   async createTask(command: CreateTaskCommand): Promise<Task> {
@@ -204,10 +293,11 @@ export class OfficeService {
     if (!(await this.repos.projects.get(projectId))) {
       throw new Error(`project not found: ${projectId}`);
     }
+    // A task may be created with no agent at all — most are, at first.
     const assignedAgentId =
       command.assignedAgentId === undefined ? undefined : asAgentId(command.assignedAgentId);
-    if (assignedAgentId && !(await this.repos.agents.get(assignedAgentId))) {
-      throw new Error(`agent not found: ${assignedAgentId}`);
+    if (assignedAgentId) {
+      await this.assertMember(projectId, assignedAgentId);
     }
 
     const task = createTask(
@@ -216,9 +306,19 @@ export class OfficeService {
         title: command.title,
         description: command.description,
         assignedAgentId,
+        priority: command.priority,
+        parentTaskId:
+          command.parentTaskId === undefined ? undefined : asTaskId(command.parentTaskId),
+        dependencies: command.dependencies?.map(asTaskId),
+        inputs: command.inputs,
       },
       this.deps,
     );
+    // Both graphs are validated before the task exists, so an unexecutable
+    // graph is never written.
+    const graph = await this.graphFor(task);
+    assertParentValid(task, graph);
+    assertDependenciesValid(task, graph);
     await this.repos.tasks.put(task);
     return task;
   }
@@ -439,6 +539,288 @@ export class OfficeService {
       }
       return updated;
     });
+  }
+
+  // ── Project workspace ──────────────────────────────────────────
+  //
+  // A project's temporary working context: its own definition, its members,
+  // its knowledge and its tasks. No method here writes an AgentDefinition, a
+  // Skill or an AgentKnowledge — project work never becomes agent memory.
+
+  /** One project with everything the workspace shows, in one read. */
+  async projectDetail(projectIdRaw: string): Promise<ProjectDetailView | null> {
+    const projectId = asProjectId(projectIdRaw);
+    const project = await this.repos.projects.get(projectId);
+    if (!project) {
+      return null;
+    }
+    const [memberships, knowledge, tasks] = await Promise.all([
+      this.repos.projectAgents.listByProject(projectId),
+      this.repos.projectKnowledge.listByProject(projectId),
+      this.repos.tasks.listByProject(projectId),
+    ]);
+    const resolved = await Promise.all(
+      knowledge.map(async (item) => ({ item, ...(await this.readContent(item.location)) })),
+    );
+    return { project, memberships, knowledge: resolved, tasks };
+  }
+
+  async updateProject(command: UpdateProjectCommand): Promise<Project> {
+    const projectId = asProjectId(command.projectId);
+    const project = await this.repos.projects.get(projectId);
+    if (!project) {
+      throw new Error(`project not found: ${projectId}`);
+    }
+    const settings = {
+      ...(command.workspacePaths === undefined ? {} : { workspacePaths: command.workspacePaths }),
+      ...(command.defaultProvider === undefined
+        ? {}
+        : { defaultProvider: command.defaultProvider }),
+      ...(command.defaultModel === undefined ? {} : { defaultModel: command.defaultModel }),
+    };
+    const updated = updateProjectDefinition(
+      project,
+      {
+        ...(command.name === undefined ? {} : { name: command.name }),
+        ...(command.description === undefined ? {} : { description: command.description }),
+        ...(command.status === undefined ? {} : { status: command.status }),
+        ...(Object.keys(settings).length === 0 ? {} : { settings }),
+      },
+      this.deps.clock,
+    );
+    await this.repos.projects.put(updated);
+    return updated;
+  }
+
+  // ── Project knowledge (owned by one project) ───────────────────
+
+  async createProjectKnowledge(command: CreateProjectKnowledgeCommand): Promise<ProjectKnowledge> {
+    const projectId = asProjectId(command.projectId);
+    if (!(await this.repos.projects.get(projectId))) {
+      throw new Error(`project not found: ${projectId}`);
+    }
+    return this.storage.uow.run(async (repos) => {
+      // Owned by the project, in the metadata and in the blob namespace alike.
+      const location = await repos.blobs.write(
+        { owner: { kind: 'project', projectId }, name: `${command.title}.md` },
+        command.content,
+      );
+      const item = createProjectKnowledgeItem(
+        {
+          projectId,
+          type: command.knowledgeType,
+          title: command.title,
+          source: { origin: 'human' },
+          location,
+          tags: command.tags,
+        },
+        this.deps,
+      );
+      await repos.projectKnowledge.put(item);
+      return item;
+    });
+  }
+
+  async updateProjectKnowledge(command: UpdateProjectKnowledgeCommand): Promise<ProjectKnowledge> {
+    const knowledgeId = asProjectKnowledgeId(command.knowledgeId);
+    const item = await this.repos.projectKnowledge.get(knowledgeId);
+    if (!item) {
+      throw new Error(`project knowledge not found: ${knowledgeId}`);
+    }
+    return this.storage.uow.run(async (repos) => {
+      let location: ResourceRef | undefined;
+      if (command.content !== undefined) {
+        location = await repos.blobs.write(
+          {
+            owner: { kind: 'project', projectId: item.projectId },
+            name: `${command.title ?? item.title}.md`,
+          },
+          command.content,
+        );
+      }
+      const updated = updateProjectKnowledgeItem(
+        item,
+        {
+          ...(command.title === undefined ? {} : { title: command.title }),
+          ...(command.knowledgeType === undefined ? {} : { type: command.knowledgeType }),
+          ...(command.tags === undefined ? {} : { tags: command.tags }),
+          ...(location === undefined ? {} : { location }),
+        },
+        this.deps.clock,
+      );
+      await repos.projectKnowledge.put(updated);
+      if (location) {
+        await repos.blobs.delete(item.location);
+      }
+      return updated;
+    });
+  }
+
+  async deleteProjectKnowledge(knowledgeIdRaw: string): Promise<boolean> {
+    const knowledgeId = asProjectKnowledgeId(knowledgeIdRaw);
+    const item = await this.repos.projectKnowledge.get(knowledgeId);
+    if (!item) {
+      return false;
+    }
+    return this.storage.uow.run(async (repos) => {
+      const removed = await repos.projectKnowledge.delete(knowledgeId);
+      if (removed) {
+        await repos.blobs.delete(item.location);
+      }
+      return removed;
+    });
+  }
+
+  // ── Tasks ──────────────────────────────────────────────────────
+
+  /**
+   * Edit a task's own fields.
+   *
+   * Status and assignment are NOT here: the domain guards those with a
+   * transition table and assignment rules, and they have their own methods.
+   *
+   * The frozen M1 domain ships no `updateTask`/`TaskPatch` (every other entity
+   * has one), so the patch is composed here and then handed to the domain's own
+   * graph validators. See the phase report.
+   */
+  async updateTask(command: UpdateTaskCommand): Promise<Task> {
+    const taskId = asTaskId(command.taskId);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`task not found: ${taskId}`);
+    }
+    const title = command.title === undefined ? task.title : command.title.trim();
+    if (!title) {
+      throw new Error('task.title must not be empty');
+    }
+
+    const updated: Task = {
+      ...task,
+      title,
+      description:
+        command.description === undefined ? task.description : command.description.trim(),
+      priority: command.priority ?? task.priority,
+      dependencies:
+        command.dependencies === undefined ? task.dependencies : command.dependencies.map(asTaskId),
+      inputs: command.inputs === undefined ? task.inputs : [...command.inputs],
+      updatedAt: this.deps.clock.now(),
+    };
+    if (command.clearParentTask) {
+      delete updated.parentTaskId;
+    } else if (command.parentTaskId !== undefined) {
+      updated.parentTaskId = asTaskId(command.parentTaskId);
+    }
+
+    const graph = await this.graphFor(updated);
+    assertParentValid(updated, graph);
+    assertDependenciesValid(updated, graph);
+    await this.repos.tasks.put(updated);
+    return updated;
+  }
+
+  /**
+   * The graph a task is validated against: its project's tasks, plus any task
+   * it names that is not among them.
+   *
+   * Without the second half, an id belonging to another project looks merely
+   * unknown, and the domain reports "does not exist" instead of the
+   * cross-project violation it actually is.
+   */
+  private async graphFor(task: Task): Promise<Task[]> {
+    const graph = await this.repos.tasks.listByProject(task.projectId);
+    const known = new Set(graph.map((t) => t.id));
+    const referenced = [...task.dependencies, ...(task.parentTaskId ? [task.parentTaskId] : [])];
+    for (const id of referenced) {
+      if (known.has(id)) {
+        continue;
+      }
+      known.add(id);
+      const referencedTask = await this.repos.tasks.get(id);
+      if (referencedTask) {
+        graph.push(referencedTask);
+      }
+    }
+    return graph;
+  }
+
+  /** Assign a task to an agent that is a member of the task's project. */
+  async assignTask(command: AssignTaskCommand): Promise<Task> {
+    const taskId = asTaskId(command.taskId);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`task not found: ${taskId}`);
+    }
+    const agentId = asAgentId(command.agentId);
+    await this.assertMember(task.projectId, agentId);
+    const updated = assignTaskToAgent(task, agentId, this.deps.clock);
+    await this.repos.tasks.put(updated);
+    return updated;
+  }
+
+  async unassignTask(taskIdRaw: string): Promise<Task> {
+    const taskId = asTaskId(taskIdRaw);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`task not found: ${taskId}`);
+    }
+    const updated = unassignTaskFromAgent(task, this.deps.clock);
+    await this.repos.tasks.put(updated);
+    return updated;
+  }
+
+  /** Move a task through the domain's status machine, dependencies and all. */
+  async setTaskStatus(command: SetTaskStatusCommand): Promise<Task> {
+    const taskId = asTaskId(command.taskId);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`task not found: ${taskId}`);
+    }
+    // The domain does no I/O, so the dependency statuses it needs to decide
+    // whether work may start are fetched here and handed over.
+    const dependencies = await this.repos.tasks.listDependencies(taskId);
+    const updated = transitionTask(task, command.status, this.deps.clock, {
+      dependencyStatuses: dependencies.map((d) => d.status),
+    });
+    await this.repos.tasks.put(updated);
+    return updated;
+  }
+
+  /**
+   * Delete a task and the edges that pointed at it.
+   *
+   * `dependencies` is a stored list, not a foreign key, so a plain delete would
+   * leave ids behind that the graph validator later reports as unknown — the
+   * next edit of an untouched task would fail. The children's `parentTaskId` is
+   * a real foreign key and the database clears it.
+   */
+  async deleteTask(taskIdRaw: string): Promise<boolean> {
+    const taskId = asTaskId(taskIdRaw);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      return false;
+    }
+    return this.storage.uow.run(async (repos) => {
+      for (const other of await repos.tasks.listByProject(task.projectId)) {
+        if (other.id !== taskId && other.dependencies.includes(taskId)) {
+          await repos.tasks.put({
+            ...other,
+            dependencies: other.dependencies.filter((id) => id !== taskId),
+            updatedAt: this.deps.clock.now(),
+          });
+        }
+      }
+      return repos.tasks.delete(taskId);
+    });
+  }
+
+  /** An agent may only be given work in a project it belongs to. */
+  private async assertMember(projectId: ProjectId, agentId: AgentId): Promise<void> {
+    if (!(await this.repos.agents.get(agentId))) {
+      throw new Error(`agent not found: ${agentId}`);
+    }
+    if (!(await this.repos.projectAgents.find(projectId, agentId))) {
+      throw new Error('agent is not a member of this project');
+    }
   }
 
   async deleteAgentKnowledge(knowledgeIdRaw: string): Promise<boolean> {

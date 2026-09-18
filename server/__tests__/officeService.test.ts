@@ -345,6 +345,350 @@ describe('OfficeService', () => {
     ).rejects.toThrow(/agent not found/);
   });
 
+  // ── Project workspace ────────────────────────────────────────
+
+  async function projectWithMember(): Promise<{
+    office: OfficeService;
+    projectId: string;
+    agentId: string;
+  }> {
+    const office = service();
+    const project = await office.createProject({ name: 'AiWow' });
+    const agent = await office.createAgent({ name: 'UX', role: 'ux', provider: 'claude' });
+    await office.addAgentToProject({ projectId: project.id, agentId: agent.id });
+    return { office, projectId: project.id, agentId: agent.id };
+  }
+
+  it('edits a project and keeps it across a reopen', async () => {
+    const office = service();
+    const project = await office.createProject({ name: 'AiWow' });
+    await office.updateProject({
+      projectId: project.id,
+      name: 'AiWow v2',
+      description: 'Onboarding redesign',
+      status: 'paused',
+      workspacePaths: ['/srv/aiwow'],
+      defaultModel: 'claude-opus-5',
+    });
+
+    const detail = await reopen().projectDetail(project.id);
+    expect(detail?.project.name).toBe('AiWow v2');
+    expect(detail?.project.description).toBe('Onboarding redesign');
+    expect(detail?.project.status).toBe('paused');
+    expect(detail?.project.settings.workspacePaths).toEqual(['/srv/aiwow']);
+    expect(detail?.project.settings.defaultModel).toBe('claude-opus-5');
+  });
+
+  it('adds, edits and deletes project knowledge, content and all', async () => {
+    const office = service();
+    const project = await office.createProject({ name: 'AiWow' });
+    const item = await office.createProjectKnowledge({
+      projectId: project.id,
+      title: 'Brand voice',
+      knowledgeType: 'design_system',
+      content: 'Plain, direct, no exclamation marks.',
+      tags: ['brand'],
+    });
+    expect(item.projectId).toBe(project.id);
+    expect(item.source).toEqual({ origin: 'human' });
+
+    const stored = await reopen().projectDetail(project.id);
+    expect(stored?.knowledge).toHaveLength(1);
+    expect(stored?.knowledge[0]!.content).toBe('Plain, direct, no exclamation marks.');
+    expect(stored?.knowledge[0]!.contentReadable).toBe(true);
+
+    await reopen().updateProjectKnowledge({
+      knowledgeId: item.id,
+      title: 'Brand voice v2',
+      content: 'Plain and direct.',
+      tags: ['brand', 'copy'],
+    });
+    const edited = await reopen().projectDetail(project.id);
+    expect(edited?.knowledge[0]!.item.title).toBe('Brand voice v2');
+    expect(edited?.knowledge[0]!.content).toBe('Plain and direct.');
+    expect(edited?.knowledge[0]!.item.tags).toEqual(['brand', 'copy']);
+
+    expect(await reopen().deleteProjectKnowledge(item.id)).toBe(true);
+    expect((await reopen().projectDetail(project.id))?.knowledge).toEqual([]);
+  });
+
+  it('keeps project knowledge and agent knowledge entirely separate', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    await office.createAgentKnowledge({
+      agentId,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'Agent-owned.',
+    });
+    const projectItem = await office.createProjectKnowledge({
+      projectId,
+      title: 'Brand voice',
+      knowledgeType: 'design_system',
+      content: 'Project-owned.',
+    });
+
+    // Neither library can see the other's item.
+    expect((await office.agentDetail(agentId))?.knowledge.map((k) => k.item.title)).toEqual([
+      'Interview guide',
+    ]);
+    expect((await office.projectDetail(projectId))?.knowledge.map((k) => k.item.title)).toEqual([
+      'Brand voice',
+    ]);
+
+    // Editing and deleting project knowledge leaves the agent untouched.
+    await office.updateProjectKnowledge({ knowledgeId: projectItem.id, content: 'Changed.' });
+    await office.deleteProjectKnowledge(projectItem.id);
+
+    const after = reopen();
+    const agentKnowledge = (await after.agentDetail(agentId))?.knowledge;
+    expect(agentKnowledge).toHaveLength(1);
+    expect(agentKnowledge?.[0]!.content).toBe('Agent-owned.');
+    expect((await after.projectDetail(projectId))?.knowledge).toEqual([]);
+  });
+
+  it('holds many small tasks, assigned and unassigned alike', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    for (let i = 0; i < 12; i++) {
+      await office.createTask({ projectId, title: `Step ${i + 1}` });
+    }
+    const first = (await office.projectDetail(projectId))!.tasks[0]!;
+    await office.assignTask({ taskId: first.id, agentId });
+
+    const detail = await reopen().projectDetail(projectId);
+    expect(detail?.tasks).toHaveLength(12);
+    // Eleven of them have no agent at all, which is allowed.
+    expect(detail?.tasks.filter((t) => t.assignedAgentId === undefined)).toHaveLength(11);
+    expect(detail?.tasks.find((t) => t.id === first.id)?.assignedAgentId).toBe(agentId);
+  });
+
+  it('edits a task and persists every field', async () => {
+    const { office, projectId } = await projectWithMember();
+    const knowledge = await office.createProjectKnowledge({
+      projectId,
+      title: 'Brand voice',
+      knowledgeType: 'design_system',
+      content: 'Plain and direct.',
+    });
+    const parent = await office.createTask({ projectId, title: 'Redesign onboarding' });
+    const task = await office.createTask({ projectId, title: 'Draft the copy' });
+
+    await office.updateTask({
+      taskId: task.id,
+      title: 'Draft the welcome copy',
+      description: 'Done when the three screens read in one voice.',
+      priority: 'high',
+      parentTaskId: parent.id,
+      inputs: [
+        { kind: 'projectKnowledge', knowledgeId: knowledge.id },
+        { kind: 'text', value: 'Keep it under 40 words.' },
+      ],
+    });
+
+    const stored = (await reopen().projectDetail(projectId))!.tasks.find((t) => t.id === task.id)!;
+    expect(stored.title).toBe('Draft the welcome copy');
+    expect(stored.description).toBe('Done when the three screens read in one voice.');
+    expect(stored.priority).toBe('high');
+    expect(stored.parentTaskId).toBe(parent.id);
+    expect(stored.inputs).toEqual([
+      { kind: 'projectKnowledge', knowledgeId: knowledge.id },
+      { kind: 'text', value: 'Keep it under 40 words.' },
+    ]);
+
+    // And the parent link can be cut again.
+    await reopen().updateTask({ taskId: task.id, clearParentTask: true });
+    expect(
+      (await reopen().projectDetail(projectId))!.tasks.find((t) => t.id === task.id)!.parentTaskId,
+    ).toBeUndefined();
+  });
+
+  it('assigns only members, and reassigns or unassigns where the domain allows', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    const outsider = await office.createAgent({ name: 'QA', role: 'qa', provider: 'claude' });
+    const task = await office.createTask({ projectId, title: 'Draft the copy' });
+
+    await expect(office.assignTask({ taskId: task.id, agentId: outsider.id })).rejects.toThrow(
+      /not a member/,
+    );
+    await expect(
+      office.createTask({ projectId, title: 'Another', assignedAgentId: outsider.id }),
+    ).rejects.toThrow(/not a member/);
+
+    await office.assignTask({ taskId: task.id, agentId });
+    await office.addAgentToProject({ projectId, agentId: outsider.id });
+    await office.assignTask({ taskId: task.id, agentId: outsider.id });
+    expect((await reopen().projectDetail(projectId))!.tasks[0]!.assignedAgentId).toBe(outsider.id);
+
+    await reopen().unassignTask(task.id);
+    expect((await reopen().projectDetail(projectId))!.tasks[0]!.assignedAgentId).toBeUndefined();
+  });
+
+  it('never leaves a task assigned to a former member', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    const task = await office.createTask({ projectId, title: 'Draft the copy' });
+    await office.assignTask({ taskId: task.id, agentId });
+
+    await office.removeAgentFromProject({ projectId, agentId });
+
+    const after = reopen();
+    // The task survives, without an owner it no longer has.
+    const stored = (await after.projectDetail(projectId))!.tasks[0]!;
+    expect(stored.assignedAgentId).toBeUndefined();
+    // The membership is gone; the global agent itself is untouched.
+    expect((await after.projectDetail(projectId))!.memberships).toEqual([]);
+    expect(await after.getAgent(agentId as never)).not.toBeNull();
+  });
+
+  it('refuses to remove a member whose task is in progress', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    const task = await office.createTask({ projectId, title: 'Draft the copy' });
+    await office.assignTask({ taskId: task.id, agentId });
+    await office.setTaskStatus({ taskId: task.id, status: 'todo' });
+    await office.setTaskStatus({ taskId: task.id, status: 'in_progress' });
+
+    await expect(office.removeAgentFromProject({ projectId, agentId })).rejects.toThrow(
+      /cannot unassign a task in progress/,
+    );
+
+    // Nothing moved: the membership and the assignment are both still there.
+    const after = reopen();
+    expect((await after.projectDetail(projectId))!.memberships).toHaveLength(1);
+    expect((await after.projectDetail(projectId))!.tasks[0]!.assignedAgentId).toBe(agentId);
+  });
+
+  it('persists dependencies and enforces the existing graph rules', async () => {
+    const { office, projectId } = await projectWithMember();
+    const research = await office.createTask({ projectId, title: 'Research' });
+    const draft = await office.createTask({
+      projectId,
+      title: 'Draft',
+      dependencies: [research.id],
+    });
+    expect(draft.dependencies).toEqual([research.id]);
+
+    // Self, unknown, cross-project and cyclic edges are all refused.
+    await expect(office.updateTask({ taskId: draft.id, dependencies: [draft.id] })).rejects.toThrow(
+      /cannot depend on itself/,
+    );
+    await expect(
+      office.updateTask({
+        taskId: draft.id,
+        dependencies: ['00000000-0000-4000-8000-0000000000bb'],
+      }),
+    ).rejects.toThrow(/does not exist/);
+
+    const other = await office.createProject({ name: 'Beta' });
+    const foreign = await office.createTask({ projectId: other.id, title: 'Elsewhere' });
+    await expect(
+      office.updateTask({ taskId: draft.id, dependencies: [foreign.id] }),
+    ).rejects.toThrow(/same project/);
+
+    await expect(
+      office.updateTask({ taskId: research.id, dependencies: [draft.id] }),
+    ).rejects.toThrow(/cycle/i);
+
+    // The sound edge survived every rejection and a reopen.
+    const stored = (await reopen().projectDetail(projectId))!.tasks.find((t) => t.id === draft.id)!;
+    expect(stored.dependencies).toEqual([research.id]);
+  });
+
+  it('will not start a task before its dependencies are done or without an agent', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    const research = await office.createTask({ projectId, title: 'Research' });
+    const draft = await office.createTask({
+      projectId,
+      title: 'Draft',
+      dependencies: [research.id],
+    });
+
+    await office.setTaskStatus({ taskId: draft.id, status: 'todo' });
+    // No agent yet.
+    await expect(office.setTaskStatus({ taskId: draft.id, status: 'in_progress' })).rejects.toThrow(
+      /no assigned agent/,
+    );
+
+    await office.assignTask({ taskId: draft.id, agentId });
+    await expect(office.setTaskStatus({ taskId: draft.id, status: 'in_progress' })).rejects.toThrow(
+      /unmet dependenc/,
+    );
+
+    // Finish the dependency, and the same move is allowed.
+    await office.assignTask({ taskId: research.id, agentId });
+    await office.setTaskStatus({ taskId: research.id, status: 'todo' });
+    await office.setTaskStatus({ taskId: research.id, status: 'in_progress' });
+    await office.setTaskStatus({ taskId: research.id, status: 'done' });
+    await office.setTaskStatus({ taskId: draft.id, status: 'in_progress' });
+
+    const stored = (await reopen().projectDetail(projectId))!.tasks;
+    expect(stored.find((t) => t.id === draft.id)?.status).toBe('in_progress');
+    expect(stored.find((t) => t.id === research.id)?.status).toBe('done');
+  });
+
+  it('removes a deleted task from the tasks that depended on it', async () => {
+    const { office, projectId } = await projectWithMember();
+    const research = await office.createTask({ projectId, title: 'Research' });
+    const draft = await office.createTask({
+      projectId,
+      title: 'Draft',
+      dependencies: [research.id],
+    });
+
+    expect(await office.deleteTask(research.id)).toBe(true);
+
+    const after = reopen();
+    const stored = (await after.projectDetail(projectId))!;
+    expect(stored.tasks.map((t) => t.id)).toEqual([draft.id]);
+    // No dangling edge left behind, so the survivor is still editable.
+    expect(stored.tasks[0]!.dependencies).toEqual([]);
+    await expect(after.updateTask({ taskId: draft.id, title: 'Draft v2' })).resolves.toBeTruthy();
+  });
+
+  it('leaves agent configuration untouched through a whole project workflow', async () => {
+    const { office, projectId, agentId } = await projectWithMember();
+    const skill = await office.createSkill({
+      agentId,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+    const agentKnowledge = await office.createAgentKnowledge({
+      agentId,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'Agent-owned.',
+    });
+    const before = await office.agentDetail(agentId);
+
+    // A full project pass: knowledge, tasks, assignment, status, deletion.
+    await office.createProjectKnowledge({
+      projectId,
+      title: 'Brand voice',
+      knowledgeType: 'design_system',
+      content: 'Project-owned.',
+    });
+    const task = await office.createTask({ projectId, title: 'Draft the copy' });
+    await office.assignTask({ taskId: task.id, agentId });
+    await office.setTaskStatus({ taskId: task.id, status: 'todo' });
+    await office.updateTask({ taskId: task.id, description: 'Everything learned stays here.' });
+    await office.deleteTask(task.id);
+
+    const after = (await reopen().agentDetail(agentId))!;
+    expect(after.agent).toEqual(before?.agent);
+    expect(after.skills.map((s) => s.id)).toEqual([skill.id]);
+    expect(after.skills[0]!.source).toEqual(before?.skills[0]!.source);
+    expect(after.knowledge.map((k) => k.item.id)).toEqual([agentKnowledge.id]);
+    expect(after.knowledge[0]!.content).toBe('Agent-owned.');
+  });
+
+  it('starts a fresh office with no projects, knowledge or tasks', async () => {
+    const office = service();
+    expect(await office.projectDetail('00000000-0000-4000-8000-0000000000cc')).toBeNull();
+    const snapshot = await office.snapshot();
+    expect(snapshot.projects).toEqual([]);
+    expect(snapshot.agents).toEqual([]);
+    expect(snapshot.tasks).toEqual([]);
+  });
+
   it('drops a selection that no longer exists', async () => {
     const office = service();
     const snapshot = await office.snapshot('00000000-0000-4000-8000-0000000000ff' as never);

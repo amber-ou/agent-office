@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { Button } from '../components/ui/Button.js';
 import { Modal } from '../components/ui/Modal.js';
 import { AgentConfigPanel } from './AgentConfigPanel.js';
+import { ProjectWorkspacePanel } from './ProjectWorkspacePanel.js';
 import type { CreateAgentFields } from './useOfficeState.js';
 import { useOfficeState } from './useOfficeState.js';
 
@@ -34,7 +35,6 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
   const office = useOfficeState();
 
   const [projectName, setProjectName] = useState('');
-  const [taskTitle, setTaskTitle] = useState('');
   const [agent, setAgent] = useState<CreateAgentFields>({
     name: '',
     role: '',
@@ -67,15 +67,6 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
     }
     office.createAgent({ ...agent, name, role, provider });
     setAgent({ name: '', role: '', provider: 'claude' });
-  };
-
-  const submitTask = () => {
-    const title = taskTitle.trim();
-    if (!title || !activeProjectId) {
-      return;
-    }
-    office.createTask(activeProjectId, title);
-    setTaskTitle('');
   };
 
   return (
@@ -112,14 +103,30 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
             <ul>
               {office.projects.map((project) => (
                 <li key={project.id} className={rowClass}>
-                  <span className="truncate">{project.name}</span>
-                  <Button
-                    variant={project.id === activeProjectId ? 'active' : 'default'}
-                    size="sm"
-                    onClick={() => office.setActiveProject(project.id)}
-                  >
-                    {project.id === activeProjectId ? 'Selected' : 'Select'}
-                  </Button>
+                  <span className="truncate">
+                    {project.name}{' '}
+                    <span className="text-text-muted text-sm">· {project.status}</span>
+                  </span>
+                  <span className="flex gap-4 shrink-0">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        // Opening a project is also how you choose the one the
+                        // office shows: two selections would only diverge.
+                        office.setActiveProject(project.id);
+                        office.openProject(project.id);
+                      }}
+                    >
+                      Open
+                    </Button>
+                    <Button
+                      variant={project.id === activeProjectId ? 'active' : 'default'}
+                      size="sm"
+                      onClick={() => office.setActiveProject(project.id)}
+                    >
+                      {project.id === activeProjectId ? 'Selected' : 'Select'}
+                    </Button>
+                  </span>
                 </li>
               ))}
             </ul>
@@ -228,41 +235,34 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
           )}
         </section>
 
-        {/* ── Tasks of the selected project ────────────────────── */}
+        {/* ── Tasks live in the project workspace ──────────────── */}
         <section className={sectionClass}>
           <h3 className={headingClass}>Tasks</h3>
           {!activeProjectId ? (
             <p className={emptyClass}>Select a project first.</p>
           ) : (
-            <>
-              <div className="flex gap-4">
-                <input
-                  className={fieldClass}
-                  placeholder="New task title"
-                  value={taskTitle}
-                  onChange={(e) => setTaskTitle(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submitTask()}
-                />
-                <Button variant="accent" onClick={submitTask}>
-                  Create
-                </Button>
-              </div>
-              {office.tasks.length === 0 ? (
-                <p className={emptyClass}>No tasks yet.</p>
-              ) : (
-                <ul>
-                  {office.tasks.map((task) => (
-                    <li key={task.id} className={rowClass}>
-                      <span className="truncate">{task.title}</span>
-                      <span className="text-text-muted text-sm">{task.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
+            <div className="flex items-center justify-between gap-6">
+              <span className="text-text-muted text-sm">
+                {office.tasks.length} task(s). Tasks, project context and project knowledge are
+                edited in the project workspace.
+              </span>
+              <Button variant="accent" onClick={() => office.openProject(activeProjectId)}>
+                Open workspace
+              </Button>
+            </div>
           )}
         </section>
       </div>
+      {office.projectDetail && (
+        <ProjectWorkspacePanel
+          // Remount on a different project so the draft forms reseed from it.
+          key={office.projectDetail.project.id}
+          detail={office.projectDetail}
+          agents={office.agents}
+          commands={office}
+          error={office.error}
+        />
+      )}
       {office.agentDetail && (
         <AgentConfigPanel
           // Remount on a different agent so the draft forms reseed from it.

@@ -41,7 +41,8 @@ export type ServerMessage =
   | AgentDiagnostics
   | OfficeState
   | OfficeError
-  | AgentDetail;
+  | AgentDetail
+  | ProjectDetail;
 
 export type ClientMessage =
   | WebviewReady
@@ -80,7 +81,17 @@ export type ClientMessage =
   | DeleteSkill
   | CreateAgentKnowledge
   | UpdateAgentKnowledge
-  | DeleteAgentKnowledge;
+  | DeleteAgentKnowledge
+  | RequestProjectDetail
+  | UpdateProject
+  | CreateProjectKnowledge
+  | UpdateProjectKnowledge
+  | DeleteProjectKnowledge
+  | UpdateTask
+  | AssignTask
+  | UnassignTask
+  | SetTaskStatus
+  | DeleteTask;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -386,8 +397,19 @@ export interface OfficeTask {
   status: string;
   priority: string;
   assignedAgentId?: string;
+  parentTaskId?: string;
+  dependencies: string[];
+  inputs: OfficeTaskInput[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OfficeTaskInput {
+  kind: string;
+  value?: string;
+  knowledgeId?: string;
+  outputId?: string;
+  path?: string;
 }
 
 export interface OfficeError {
@@ -417,6 +439,38 @@ export interface OfficeSkill {
 export interface OfficeAgentKnowledge {
   id: string;
   agentId: string;
+  type: string;
+  title: string;
+  tags: string[];
+  content?: string;
+  contentReadable?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectDetail {
+  type: 'projectDetail';
+  project: OfficeProjectDetail;
+  memberships: OfficeMembership[];
+  knowledge: OfficeProjectKnowledge[];
+  tasks: OfficeTask[];
+}
+
+export interface OfficeProjectDetail {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  workspacePaths: string[];
+  defaultProvider?: string;
+  defaultModel?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficeProjectKnowledge {
+  id: string;
+  projectId: string;
   type: string;
   title: string;
   tags: string[];
@@ -584,6 +638,10 @@ export interface CreateTask {
   title: string;
   description?: string;
   assignedAgentId?: string;
+  priority?: string;
+  parentTaskId?: string;
+  dependencies?: string[];
+  inputs?: OfficeTaskInput[];
 }
 
 export interface RequestAgentDetail {
@@ -649,4 +707,77 @@ export interface UpdateAgentKnowledge {
 export interface DeleteAgentKnowledge {
   type: 'deleteAgentKnowledge';
   knowledgeId: string;
+}
+
+export interface RequestProjectDetail {
+  type: 'requestProjectDetail';
+  projectId?: string;
+}
+
+export interface UpdateProject {
+  type: 'updateProject';
+  projectId: string;
+  name?: string;
+  description?: string;
+  status?: string;
+  workspacePaths?: string[];
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
+export interface CreateProjectKnowledge {
+  type: 'createProjectKnowledge';
+  projectId: string;
+  title: string;
+  knowledgeType: string;
+  content: string;
+  tags?: string[];
+}
+
+export interface UpdateProjectKnowledge {
+  type: 'updateProjectKnowledge';
+  knowledgeId: string;
+  title?: string;
+  knowledgeType?: string;
+  content?: string;
+  tags?: string[];
+}
+
+export interface DeleteProjectKnowledge {
+  type: 'deleteProjectKnowledge';
+  knowledgeId: string;
+}
+
+export interface UpdateTask {
+  type: 'updateTask';
+  taskId: string;
+  title?: string;
+  description?: string;
+  priority?: string;
+  parentTaskId?: string;
+  clearParentTask?: boolean;
+  dependencies?: string[];
+  inputs?: OfficeTaskInput[];
+}
+
+export interface AssignTask {
+  type: 'assignTask';
+  taskId: string;
+  agentId: string;
+}
+
+export interface UnassignTask {
+  type: 'unassignTask';
+  taskId: string;
+}
+
+export interface SetTaskStatus {
+  type: 'setTaskStatus';
+  taskId: string;
+  status: string;
+}
+
+export interface DeleteTask {
+  type: 'deleteTask';
+  taskId: string;
 }
