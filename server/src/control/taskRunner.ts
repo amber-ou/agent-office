@@ -18,6 +18,7 @@ import { EventEmitter } from 'node:events';
 import * as os from 'node:os';
 
 import type {
+  AgentDefinition,
   AgentSession,
   OutputItem,
   Repositories,
@@ -40,6 +41,7 @@ import {
 } from '../../../domain/src/index.js';
 import type { ClaudeRunOutcome, ClaudeStartRunRequest } from '../../../runtime/src/index.js';
 import { ClaudeCliRuntime } from '../../../runtime/src/index.js';
+import type { ReviewNote } from '../../../storage/src/index.js';
 import { assembleContext } from './contextAssembly.js';
 import type { OfficeStorage } from './officeStorage.js';
 
@@ -100,6 +102,80 @@ export class TaskRunner extends EventEmitter {
    * leaves the task exactly as it was.
    */
   async run(taskIdRaw: string, activeProjectId: string | undefined): Promise<RunStartedResult> {
+    const { task, agent, dependencies } = await this.eligible(taskIdRaw, activeProjectId);
+    const { bundle, contents } = await assembleContext(this.repos, task);
+    return this.dispatch({
+      task,
+      agent,
+      dependencies,
+      request: { context: bundle, contents },
+    });
+  }
+
+  /**
+   * Continue the work after a human asked for changes.
+   *
+   * The feedback is recorded as a review note and the revision resumes the
+   * SAME Claude session, so the earlier turns are already there and only the
+   * new instruction is sent. The Office side of it is a NEW AgentSession over
+   * the same `providerSessionId` — which the domain explicitly allows to repeat
+   * across runs (ADR 002) — so the history keeps every run instead of
+   * overwriting one.
+   */
+  async revise(
+    taskIdRaw: string,
+    feedback: string,
+    activeProjectId: string | undefined,
+  ): Promise<RunStartedResult> {
+    const body = feedback.trim();
+    if (!body) {
+      throw new Error('review feedback must not be empty');
+    }
+    const { task, agent, dependencies } = await this.eligible(taskIdRaw, activeProjectId);
+    if (task.status !== 'review') {
+      throw new Error(`only a task in review can be revised (this one is "${task.status}")`);
+    }
+
+    // The newest finished run for this task is the conversation to continue.
+    const previous = (await this.repos.sessions.listByProject(task.projectId))
+      .filter((s) => s.taskId === task.id && s.providerSessionId)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
+
+    const { bundle, contents } = await assembleContext(this.repos, task);
+    const note: ReviewNote = {
+      id: DEPS.ids.next(),
+      taskId: task.id,
+      ...(previous ? { aboutSessionId: previous.id } : {}),
+      author: 'human',
+      body,
+      createdAt: DEPS.clock.now(),
+    };
+
+    return this.dispatch({
+      task,
+      agent,
+      dependencies,
+      note,
+      request: {
+        context: bundle,
+        contents,
+        ...(previous?.providerSessionId
+          ? {
+              resume: previous.providerSessionId,
+              // Resumed: Claude still holds the task, the context and its own
+              // last answer, so re-sending them would only cost tokens.
+              prompt: revisionPrompt(body),
+            }
+          : {}),
+      },
+    });
+  }
+
+  /** The gates every dispatch passes, in the order whose refusal reads best. */
+  private async eligible(
+    taskIdRaw: string,
+    activeProjectId: string | undefined,
+  ): Promise<{ task: Task; agent: AgentDefinition; dependencies: Task[] }> {
     if (this.live) {
       throw new Error('another task is already running');
     }
@@ -126,15 +202,26 @@ export class TaskRunner extends EventEmitter {
     if (unmet.length > 0) {
       throw new Error(`${unmet.length} unmet dependenc${unmet.length === 1 ? 'y' : 'ies'}`);
     }
-
     const agent = await this.repos.agents.get(task.assignedAgentId);
     if (!agent) {
       throw new Error(`agent not found: ${task.assignedAgentId}`);
     }
-    const { bundle, contents } = await assembleContext(this.repos, task);
+    return { task, agent, dependencies };
+  }
+
+  /** Record the run, then hand it to the runtime. Shared by run and revise. */
+  private async dispatch(input: {
+    task: Task;
+    agent: AgentDefinition;
+    dependencies: Task[];
+    note?: ReviewNote;
+    request: Pick<ClaudeStartRunRequest, 'context' | 'contents' | 'resume' | 'prompt'>;
+  }): Promise<RunStartedResult> {
+    const { task, agent, dependencies, note } = input;
 
     // The session is the run's identity in the Office, and its id is what the
-    // provider is told to use — one identifier, no mapping table.
+    // provider is told to use — one identifier, no mapping table. A revision
+    // carries the resumed session's provider id instead.
     const session = startSession(
       {
         agentId: agent.id,
@@ -142,6 +229,7 @@ export class TaskRunner extends EventEmitter {
         provider: agent.provider,
         taskId: task.id,
         runtimeId: getTaskRuntime().descriptor.id,
+        ...(input.request.resume ? { providerSessionId: input.request.resume } : {}),
       },
       DEPS,
     );
@@ -151,6 +239,10 @@ export class TaskRunner extends EventEmitter {
     await this.storage.uow.run(async (repos) => {
       await repos.sessions.put(session);
       await repos.tasks.put(started);
+      if (note) {
+        // The note and the run it started commit together, or neither does.
+        await this.storage.reviews.put({ ...note, triggeredSessionId: session.id });
+      }
     });
 
     this.live = { sessionId: session.id, taskId: task.id };
@@ -160,10 +252,12 @@ export class TaskRunner extends EventEmitter {
     const request: ClaudeStartRunRequest = {
       sessionId: session.id,
       agent,
-      context: bundle,
-      cwd: bundle.project.settings.workspacePaths[0] ?? os.homedir(),
+      context: input.request.context,
+      cwd: input.request.context.project.settings.workspacePaths[0] ?? os.homedir(),
       // The renderer needs the blob text; the runtime reads no storage itself.
-      contents,
+      ...(input.request.contents ? { contents: input.request.contents } : {}),
+      ...(input.request.resume ? { resume: input.request.resume } : {}),
+      ...(input.request.prompt === undefined ? {} : { prompt: input.request.prompt }),
     };
     try {
       const result = await getTaskRuntime().startRun(request);
@@ -306,6 +400,22 @@ export function getTaskRunner(storage: OfficeStorage): TaskRunner {
     instance = { key: storage.databasePath, runner: new TaskRunner(storage) };
   }
   return instance.runner;
+}
+
+/**
+ * What a resumed run is sent.
+ *
+ * Short on purpose: Claude still holds the task, the project context, the
+ * agent's own material and its previous answer from earlier in this session, so
+ * the feedback is the only thing that is new.
+ */
+function revisionPrompt(feedback: string): string {
+  return [
+    '## Revision requested',
+    'A human reviewed your previous result and asked for changes:',
+    feedback,
+    'Revise your work accordingly. Your final message is captured as the new task output, so make it the complete revised deliverable.',
+  ].join('\n\n');
 }
 
 /** Drop the runner, e.g. when the database closes. */

@@ -12,13 +12,15 @@
  */
 
 import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
-import type { SqliteStorage } from '../../../storage/src/index.js';
+import type { ReviewNoteStore, SqliteStorage } from '../../../storage/src/index.js';
 import { LATEST_SCHEMA_VERSION, openSqliteStorage } from '../../../storage/src/index.js';
 import { resetTaskRunner } from './taskRunner.js';
 
 export interface OfficeStorage {
   repos: Repositories;
   uow: UnitOfWork;
+  /** Human review notes — an application record, not a domain repository. */
+  reviews: ReviewNoteStore;
   databasePath: string;
   schemaVersion: number;
 }
@@ -65,6 +67,7 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
   return {
     repos: storage.repos,
     uow: storage.uow,
+    reviews: storage.reviews,
     databasePath: storage.databasePath,
     schemaVersion: storage.schemaVersion,
   };

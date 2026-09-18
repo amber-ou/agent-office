@@ -26,7 +26,13 @@ import {
   startSession,
 } from '../../domain/src/index.js';
 import type { SqliteStorage } from '../src/index.js';
-import { LATEST_SCHEMA_VERSION, migrate, openSqliteStorage, SqliteDatabase } from '../src/index.js';
+import {
+  LATEST_SCHEMA_VERSION,
+  migrate,
+  MIGRATIONS,
+  openSqliteStorage,
+  SqliteDatabase,
+} from '../src/index.js';
 import { describeRepositoryContract } from './repositoryContract.js';
 
 // ── Test fixtures ────────────────────────────────────────────────
@@ -212,7 +218,8 @@ describe('sqlite adapter', () => {
       try {
         expect(await fresh.repos.projects.list()).toEqual([]);
         expect(await fresh.repos.agents.list()).toEqual([]);
-        expect(fresh.applied.map((m) => m.version)).toEqual([1]);
+        // A file created from nothing runs every migration, in order.
+        expect(fresh.applied.map((m) => m.version)).toEqual(MIGRATIONS.map((m) => m.version));
         expect(fresh.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
 
         // Every table, checked directly: no seed rows anywhere.

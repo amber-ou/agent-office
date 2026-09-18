@@ -31,6 +31,7 @@ export {
   InMemoryUnitOfWork,
 } from './memory/repositories.js';
 export type { SnapshotHandle, Snapshottable } from './memory/transaction.js';
+export type { ReviewNote, ReviewNoteStore } from './reviewNotes.js';
 export type { OpenSqliteStorageOptions, SqliteStorage } from './sqlite/index.js';
 export {
   BLOBS_DIR_NAME,

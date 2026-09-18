@@ -7,8 +7,8 @@
  *
  *   AGENT_OFFICE_CLAUDE_SMOKE=1 npx vitest run --root server __tests__/claudeSmoke.test.ts
  *
- * The task is deliberately trivial — one word back — so the proof costs as
- * little as possible.
+ * The task is deliberately trivial — one word back, then one word after a
+ * revision — so the proof costs as little as possible.
  */
 
 import * as fs from 'node:fs';
@@ -41,6 +41,12 @@ beforeEach(() => {
   setOfficeDataRoot(dataRoot);
 });
 
+function reopen(): OfficeService {
+  closeOfficeStorage();
+  setOfficeDataRoot(dataRoot);
+  return service();
+}
+
 afterEach(() => {
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
@@ -48,50 +54,80 @@ afterEach(() => {
 });
 
 describe.skipIf(!enabled)('real Claude Code execution', () => {
-  it('runs one trivial task end to end', { timeout: 300_000 }, async () => {
-    const office = service();
-    const project = await office.createProject({ name: 'Smoke' });
-    const agent = await office.createAgent({
-      name: 'Smoke Agent',
-      role: 'smoke',
-      provider: 'claude',
-      // The cheapest model available, for a one-word answer.
-      model: 'claude-haiku-4-5-20251001',
-      systemPrompt: 'Answer in as few words as possible.',
-    });
-    await office.addAgentToProject({ projectId: project.id, agentId: agent.id });
-    const task = await office.createTask({
-      projectId: project.id,
-      title: 'Say OK',
-      description: 'Reply with exactly: OK',
-      assignedAgentId: agent.id,
-    });
-    await office.setTaskStatus({ taskId: task.id, status: 'todo' });
+  it(
+    'runs a task, revises it on feedback, and keeps both results',
+    { timeout: 300_000 },
+    async () => {
+      const office = service();
+      const project = await office.createProject({ name: 'Smoke' });
+      const agent = await office.createAgent({
+        name: 'Smoke Agent',
+        role: 'smoke',
+        provider: 'claude',
+        // The cheapest model available, for a one-word answer.
+        model: 'claude-haiku-4-5-20251001',
+        systemPrompt: 'Answer in as few words as possible.',
+      });
+      await office.addAgentToProject({ projectId: project.id, agentId: agent.id });
+      const task = await office.createTask({
+        projectId: project.id,
+        title: 'Say ONE',
+        description: 'Reply with exactly: ONE',
+        assignedAgentId: agent.id,
+      });
+      await office.setTaskStatus({ taskId: task.id, status: 'todo' });
 
-    const storage = getOfficeStorage()!;
-    const runner = getTaskRunner(storage);
-    await runner.run(task.id, project.id);
+      const runner = getTaskRunner(getOfficeStorage()!);
+      await runner.run(task.id, project.id);
+      await settle(runner);
 
-    // The run is in flight; wait for the bridge to record its outcome.
-    for (let i = 0; i < 600 && runner.liveRun(); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    expect(runner.liveRun()).toBeUndefined();
+      const first = (await office.projectDetail(project.id))!;
+      // A failure here is a real failure, reported with whatever the runtime said.
+      expect(first.sessions[0]!.error ?? '').toBe('');
+      expect(first.sessions[0]!.status).toBe('ended');
+      expect(first.tasks[0]!.status).toBe('review');
+      expect(first.outputs).toHaveLength(1);
+      const v1 = await office.outputContent(first.outputs[0]!.id);
+      console.log(`[smoke] run 1: ${JSON.stringify(v1?.content)}`);
+      expect(v1?.content).toContain('ONE');
 
-    const detail = (await office.projectDetail(project.id))!;
-    const session = detail.sessions[0]!;
-    // A failure here is a real failure, reported with whatever the runtime said.
-    expect(session.error ?? '').toBe('');
-    expect(session.status).toBe('ended');
-    expect(session.taskId).toBe(task.id);
+      // Request changes: the same Claude session continues.
+      await runner.revise(task.id, 'Now reply with exactly: TWO', project.id);
+      await settle(runner);
 
-    expect(detail.outputs).toHaveLength(1);
-    const output = await office.outputContent(detail.outputs[0]!.id);
-    expect(output?.content?.trim()).toBeTruthy();
-    console.log(`[smoke] Claude replied: ${JSON.stringify(output?.content?.slice(0, 200))}`);
+      const after = reopen();
+      const second = (await after.projectDetail(project.id))!;
+      expect(second.sessions[0]!.error ?? '').toBe('');
+      expect(second.sessions).toHaveLength(2);
+      // One conversation, two runs.
+      expect(new Set(second.sessions.map((s) => s.providerSessionId)).size).toBe(1);
 
-    expect(detail.tasks[0]!.status).toBe('review');
-    // The run taught the agent nothing.
-    expect((await office.agentDetail(agent.id))!.knowledge).toEqual([]);
-  });
+      expect(second.outputs).toHaveLength(2);
+      const revision = second.outputs.find((o) => o.sessionId === second.sessions[0]!.id)!;
+      const v2 = await after.outputContent(revision.id);
+      console.log(`[smoke] revision: ${JSON.stringify(v2?.content)}`);
+      expect(v2?.content).toContain('TWO');
+
+      // The first result is still there, and so is the feedback.
+      const original = second.outputs.find((o) => o.id !== revision.id)!;
+      expect((await after.outputContent(original.id))?.content).toContain('ONE');
+      expect(second.reviewNotes.map((n) => n.body)).toEqual(['Now reply with exactly: TWO']);
+
+      // Accept it.
+      expect(second.tasks[0]!.status).toBe('review');
+      await after.acceptTask(task.id);
+      expect((await reopen().projectDetail(project.id))!.tasks[0]!.status).toBe('done');
+
+      // None of it became agent knowledge.
+      expect((await reopen().agentDetail(agent.id))!.knowledge).toEqual([]);
+    },
+  );
 });
+
+/** Wait for the live run to finish and its outcome to be recorded. */
+async function settle(runner: ReturnType<typeof getTaskRunner>): Promise<void> {
+  for (let i = 0; i < 600 && runner.liveRun(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  expect(runner.liveRun()).toBeUndefined();
+}

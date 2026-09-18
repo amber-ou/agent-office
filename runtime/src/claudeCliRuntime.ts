@@ -11,6 +11,14 @@
  *
  *   claude -p --output-format json --session-id <uuid> [--model <id>]
  *
+ * A revision continues that same conversation with Claude Code's own resume:
+ *
+ *   claude -p --output-format json --resume <uuid> [--model <id>]
+ *
+ * which keeps the earlier turns on Claude's side, so the feedback is all that
+ * has to be sent. `--resume` replaces `--session-id`: the run joins the session
+ * it names rather than opening a new one.
+ *
  * The Office session id IS the `--session-id`, so the run's transcript, its
  * hooks and its Office record all agree on one identifier without a mapping
  * table. Hook events, if hooks are installed, keep flowing into the pixel office
@@ -44,6 +52,13 @@ export type SpawnLike = typeof nodeSpawn;
  */
 export interface ClaudeStartRunRequest extends StartRunRequest {
   contents?: ContentsById;
+  /**
+   * Continue this provider session instead of opening a new one. The earlier
+   * turns stay on Claude's side, so `prompt` carries only what is new.
+   */
+  resume?: string;
+  /** Send this text instead of rendering the bundle. Used by a revision. */
+  prompt?: string;
 }
 
 export interface ClaudeRunOutcome {
@@ -123,15 +138,19 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
     if (this.live.has(request.sessionId)) {
       throw new Error(`session already running: ${request.sessionId}`);
     }
-    const contents = request.contents ?? (await this.contentsFor(request));
-    const prompt = renderPrompt(request.context, contents, this.budget).text;
+    let prompt = request.prompt;
+    if (prompt === undefined) {
+      const contents = request.contents ?? (await this.contentsFor(request));
+      prompt = renderPrompt(request.context, contents, this.budget).text;
+    }
 
     const args = [
       '-p',
       '--output-format',
       'json',
-      '--session-id',
-      request.sessionId,
+      // Resuming names an existing session; starting names the new one. Passing
+      // both would be asking for two different sessions at once.
+      ...(request.resume ? ['--resume', request.resume] : ['--session-id', request.sessionId]),
       ...(request.agent.model ? ['--model', request.agent.model] : []),
       ...this.extraArgs,
     ];
@@ -189,7 +208,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
     child.stdin?.end(prompt);
 
     this.live.set(request.sessionId, { kill: () => child.kill('SIGTERM') });
-    return { providerSessionId: request.sessionId };
+    return { providerSessionId: request.resume ?? request.sessionId };
   }
 
   /**

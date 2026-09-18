@@ -63,6 +63,7 @@ import {
   updateSkill as updateSkillDefinition,
   uuidIdGenerator,
 } from '../../../domain/src/index.js';
+import type { ReviewNote } from '../../../storage/src/index.js';
 import type { OfficeStorage } from './officeStorage.js';
 
 const DEFAULT_DEPS: DomainDeps = { ids: uuidIdGenerator, clock: systemClock };
@@ -122,6 +123,8 @@ export interface ProjectDetailView {
   /** Executions in this project, newest first. */
   sessions: AgentSession[];
   outputs: OutputItem[];
+  /** Human review feedback, oldest first. Never agent knowledge. */
+  reviewNotes: ReviewNote[];
 }
 
 export interface UpdateProjectCommand {
@@ -560,19 +563,28 @@ export class OfficeService {
     if (!project) {
       return null;
     }
-    const [memberships, knowledge, tasks, sessions, outputs] = await Promise.all([
+    const [memberships, knowledge, tasks, sessions, outputs, reviewNotes] = await Promise.all([
       this.repos.projectAgents.listByProject(projectId),
       this.repos.projectKnowledge.listByProject(projectId),
       this.repos.tasks.listByProject(projectId),
       this.repos.sessions.listByProject(projectId),
       this.repos.outputs.listByProject(projectId),
+      this.storage.reviews.listByProject(projectId),
     ]);
     const resolved = await Promise.all(
       knowledge.map(async (item) => ({ item, ...(await this.readContent(item.location)) })),
     );
     // Newest run first: the one the operator just started is the one they want.
     const ordered = [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-    return { project, memberships, knowledge: resolved, tasks, sessions: ordered, outputs };
+    return {
+      project,
+      memberships,
+      knowledge: resolved,
+      tasks,
+      sessions: ordered,
+      outputs,
+      reviewNotes,
+    };
   }
 
   /** One output's text, resolved through the BlobStore. */
@@ -787,6 +799,27 @@ export class OfficeService {
     const updated = unassignTaskFromAgent(task, this.deps.clock);
     await this.repos.tasks.put(updated);
     return updated;
+  }
+
+  /**
+   * Accept a reviewed result.
+   *
+   * The human half of the cycle: no runtime is involved, no output is touched,
+   * and the run history stays exactly as it is. Only the domain's own
+   * review → done transition moves.
+   */
+  async acceptTask(taskIdRaw: string): Promise<Task> {
+    const taskId = asTaskId(taskIdRaw);
+    const task = await this.repos.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`task not found: ${taskId}`);
+    }
+    if (task.status !== 'review') {
+      throw new Error(`only a task in review can be accepted (this one is "${task.status}")`);
+    }
+    const accepted = transitionTask(task, 'done', this.deps.clock);
+    await this.repos.tasks.put(accepted);
+    return accepted;
   }
 
   /** Move a task through the domain's status machine, dependencies and all. */

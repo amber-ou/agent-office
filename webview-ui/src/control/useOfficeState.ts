@@ -18,6 +18,7 @@ import type {
   OfficeProject,
   OfficeProjectDetail,
   OfficeProjectKnowledge,
+  OfficeReviewNote,
   OfficeSession,
   OfficeSkill,
   OfficeState,
@@ -45,6 +46,8 @@ export interface ProjectDetailView {
   /** Runs in this project, newest first. */
   sessions: OfficeSession[];
   outputs: OfficeOutput[];
+  /** Human review feedback, oldest first. */
+  reviewNotes: OfficeReviewNote[];
 }
 
 export interface OfficeView {
@@ -165,6 +168,8 @@ export interface OfficeCommands {
   setTaskStatus(taskId: string, status: string): void;
   deleteTask(taskId: string): void;
   runTask(taskId: string): void;
+  acceptTask(taskId: string): void;
+  requestTaskChanges(taskId: string, feedback: string): void;
   cancelTaskRun(): void;
   viewOutput(outputId: string): void;
   clearOutput(): void;
@@ -225,6 +230,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
             tasks: detail.tasks,
             sessions: detail.sessions,
             outputs: detail.outputs,
+            reviewNotes: detail.reviewNotes,
           },
           error: null,
         }));
@@ -379,6 +385,14 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     transport.send({ type: 'runTask', taskId });
   }, []);
 
+  const acceptTask = useCallback((taskId: string) => {
+    transport.send({ type: 'acceptTask', taskId });
+  }, []);
+
+  const requestTaskChanges = useCallback((taskId: string, feedback: string) => {
+    transport.send({ type: 'requestTaskChanges', taskId, feedback });
+  }, []);
+
   const cancelTaskRun = useCallback(() => {
     transport.send({ type: 'cancelTaskRun' });
   }, []);
@@ -490,6 +504,8 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     setTaskStatus,
     deleteTask,
     runTask,
+    acceptTask,
+    requestTaskChanges,
     cancelTaskRun,
     viewOutput,
     clearOutput,

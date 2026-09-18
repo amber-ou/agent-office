@@ -14,6 +14,8 @@ import { useState } from 'react';
 
 import type {
   OfficeAgent,
+  OfficeOutput,
+  OfficeReviewNote,
   OfficeSession,
   OfficeTask,
   OfficeTaskInput,
@@ -78,6 +80,8 @@ interface ProjectWorkspacePanelProps {
     | 'setTaskStatus'
     | 'deleteTask'
     | 'runTask'
+    | 'acceptTask'
+    | 'requestTaskChanges'
     | 'cancelTaskRun'
     | 'viewOutput'
     | 'clearOutput'
@@ -108,6 +112,42 @@ function splitList(value: string): string[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+type HistoryEntry =
+  | { kind: 'run'; session: OfficeSession; label: string; outputs: OfficeOutput[] }
+  | { kind: 'note'; note: OfficeReviewNote };
+
+/**
+ * Runs and review feedback in one list, newest first.
+ *
+ * Each run is labelled by its place in its own task's sequence, so a task's
+ * first result and its revisions are told apart without inventing a field for
+ * it: the sessions themselves are the history.
+ */
+function buildHistory(detail: ProjectDetailView): HistoryEntry[] {
+  // Number each task's runs oldest first: run 1, then revision 1, 2, ...
+  const seen = new Map<string, number>();
+  const labels = new Map<string, string>();
+  for (const session of [...detail.sessions].reverse()) {
+    const key = session.taskId ?? session.id;
+    const nth = (seen.get(key) ?? 0) + 1;
+    seen.set(key, nth);
+    labels.set(session.id, nth === 1 ? 'run 1' : `revision ${nth - 1}`);
+  }
+
+  const runs: HistoryEntry[] = detail.sessions.map((session) => ({
+    kind: 'run',
+    session,
+    label: labels.get(session.id) ?? 'run',
+    outputs: detail.outputs.filter((output) => output.sessionId === session.id),
+  }));
+  const notes: HistoryEntry[] = detail.reviewNotes.map((note) => ({ kind: 'note', note }));
+  return [...runs, ...notes].sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
+}
+
+function timeOf(entry: HistoryEntry): string {
+  return entry.kind === 'run' ? entry.session.startedAt : entry.note.createdAt;
 }
 
 /** The run state of a task, as a short suffix. Empty when it has never run. */
@@ -156,6 +196,8 @@ export function ProjectWorkspacePanel({
   const [editingKnowledgeId, setEditingKnowledgeId] = useState<string | null>(null);
   const [newTask, setNewTask] = useState<CreateTaskFields>({ title: '' });
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [reviewingTaskId, setReviewingTaskId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState('');
 
   const openTask = detail.tasks.find((t) => t.id === openTaskId) ?? null;
   // One run at a time, so a live session anywhere in the project blocks the
@@ -165,6 +207,10 @@ export function ProjectWorkspacePanel({
   );
   const lastSessionFor = (taskId: string): OfficeSession | undefined =>
     detail.sessions.find((s) => s.taskId === taskId);
+  const reviewingTask = detail.tasks.find((t) => t.id === reviewingTaskId) ?? null;
+  const taskTitleOf = (taskId: string | undefined): string =>
+    detail.tasks.find((t) => t.id === taskId)?.title ?? taskId ?? 'session';
+  const history = buildHistory(detail);
 
   const saveProject = () => {
     const name = form.name.trim();
@@ -470,6 +516,26 @@ export function ProjectWorkspacePanel({
                       <Button size="sm" onClick={() => commands.cancelTaskRun()}>
                         Stop
                       </Button>
+                    ) : task.status === 'review' ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="accent"
+                          onClick={() => commands.acceptTask(task.id)}
+                          title="Accept this result: the task becomes done"
+                        >
+                          Accept
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={reviewingTaskId === task.id ? 'active' : 'default'}
+                          onClick={() =>
+                            setReviewingTaskId(reviewingTaskId === task.id ? null : task.id)
+                          }
+                        >
+                          Request changes
+                        </Button>
+                      </>
                     ) : (
                       <Button
                         size="sm"
@@ -498,29 +564,76 @@ export function ProjectWorkspacePanel({
           )}
         </section>
 
+        {reviewingTask && (
+          <section className={sectionClass}>
+            <h3 className={headingClass}>Request changes · {reviewingTask.title}</h3>
+            <p className="text-text-muted text-sm">
+              The agent continues the same Claude session, so it still has its earlier work. Say
+              only what should change. This feedback belongs to the task's history — it never
+              becomes the agent's knowledge.
+            </p>
+            <textarea
+              className={`${fieldClass} h-40 resize-none`}
+              placeholder="What needs to change?"
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+            />
+            <div className="flex gap-4 justify-end">
+              <Button
+                onClick={() => {
+                  setReviewingTaskId(null);
+                  setFeedback('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant={feedback.trim() && !liveSession ? 'accent' : 'disabled'}
+                disabled={!feedback.trim() || liveSession !== undefined}
+                onClick={() => {
+                  commands.requestTaskChanges(reviewingTask.id, feedback.trim());
+                  setReviewingTaskId(null);
+                  setFeedback('');
+                }}
+              >
+                Send &amp; revise
+              </Button>
+            </div>
+          </section>
+        )}
+
         {/* ── Runs and results ─────────────────────────────────── */}
         <section className={sectionClass}>
           <h3 className={headingClass}>Runs &amp; Results</h3>
-          {detail.sessions.length === 0 ? (
+          {history.length === 0 ? (
             <p className={emptyClass}>Nothing has run yet.</p>
           ) : (
             <ul>
-              {detail.sessions.slice(0, 10).map((session) => {
-                const task = detail.tasks.find((t) => t.id === session.taskId);
-                const outputs = detail.outputs.filter((o) => o.sessionId === session.id);
-                return (
-                  <li key={session.id} className={rowClass}>
-                    <span className="truncate min-w-0">
-                      {task?.title ?? session.taskId ?? 'session'}{' '}
+              {history.map((entry) =>
+                entry.kind === 'note' ? (
+                  <li key={entry.note.id} className={rowClass}>
+                    <span className="min-w-0">
                       <span className="text-text-muted text-sm">
-                        · {session.status} · {nameOf(session.agentId)}
+                        {taskTitleOf(entry.note.taskId)} · you asked for changes
                       </span>
-                      {session.error && (
-                        <span className="text-warning text-sm block truncate">{session.error}</span>
+                      <span className="block truncate">{entry.note.body}</span>
+                    </span>
+                  </li>
+                ) : (
+                  <li key={entry.session.id} className={rowClass}>
+                    <span className="truncate min-w-0">
+                      {taskTitleOf(entry.session.taskId)}{' '}
+                      <span className="text-text-muted text-sm">
+                        · {entry.label} · {entry.session.status} · {nameOf(entry.session.agentId)}
+                      </span>
+                      {entry.session.error && (
+                        <span className="text-warning text-sm block truncate">
+                          {entry.session.error}
+                        </span>
                       )}
                     </span>
                     <span className="flex gap-4 shrink-0">
-                      {outputs.map((output) => (
+                      {entry.outputs.map((output) => (
                         <Button
                           key={output.id}
                           size="sm"
@@ -531,8 +644,8 @@ export function ProjectWorkspacePanel({
                       ))}
                     </span>
                   </li>
-                );
-              })}
+                ),
+              )}
             </ul>
           )}
           {outputContent && (

@@ -37,6 +37,7 @@ import type {
   TaskStatus,
 } from '../../../domain/src/index.js';
 import { asOutputId, asProjectId, asProjectKnowledgeId } from '../../../domain/src/index.js';
+import type { ReviewNote } from '../../../storage/src/index.js';
 import type { AgentKnowledgeView, ProjectKnowledgeView } from './officeService.js';
 import { OfficeService } from './officeService.js';
 import { getOfficeStorage, officeStorageStatus } from './officeStorage.js';
@@ -73,6 +74,8 @@ const OFFICE_CLIENT_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'runTask',
   'cancelTaskRun',
   'requestOutputContent',
+  'acceptTask',
+  'requestTaskChanges',
 ]);
 
 export function isOfficeClientMessage(type: unknown): boolean {
@@ -352,6 +355,18 @@ export class OfficeSession {
           break;
         }
 
+        case 'acceptTask':
+          // The human half of the cycle. No runtime is involved.
+          await service.acceptTask(message.taskId);
+          break;
+
+        case 'requestTaskChanges': {
+          const runner = getTaskRunner(storage);
+          this.watchRun(runner, service, send);
+          await runner.revise(message.taskId, message.feedback, this.activeProjectId);
+          break;
+        }
+
         case 'cancelTaskRun':
           await getTaskRunner(storage).cancel();
           return;
@@ -445,6 +460,7 @@ export class OfficeSession {
         tasks: detail.tasks.map(toOfficeTask),
         sessions: detail.sessions.map(toOfficeSession),
         outputs: detail.outputs.map(toOfficeOutput),
+        reviewNotes: detail.reviewNotes.map(toOfficeReviewNote),
       }),
     );
   }
@@ -630,6 +646,8 @@ const PROJECT_WORKSPACE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'setTaskStatus',
   'deleteTask',
   'runTask',
+  'acceptTask',
+  'requestTaskChanges',
   'addAgentToProject',
   'removeAgentFromProject',
 ]);
@@ -739,5 +757,17 @@ function toOfficeOutput(output: OutputItem): ProjectDetail['outputs'][number] {
     title: output.title,
     type: output.type,
     createdAt: output.createdAt,
+  };
+}
+
+function toOfficeReviewNote(note: ReviewNote): ProjectDetail['reviewNotes'][number] {
+  return {
+    id: note.id,
+    taskId: note.taskId,
+    ...(note.aboutSessionId ? { aboutSessionId: note.aboutSessionId } : {}),
+    ...(note.triggeredSessionId ? { triggeredSessionId: note.triggeredSessionId } : {}),
+    author: note.author,
+    body: note.body,
+    createdAt: note.createdAt,
   };
 }

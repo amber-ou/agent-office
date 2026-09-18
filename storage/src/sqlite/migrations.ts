@@ -203,7 +203,34 @@ CREATE INDEX idx_outputs_task ON outputs (task_id);
 `,
 };
 
-export const MIGRATIONS: readonly Migration[] = [MIGRATION_001];
+/**
+ * Migration 2 — review notes (M4 Phase 2).
+ *
+ * The human half of the review cycle. An application-level record, not a domain
+ * entity: the frozen M1 model represents continuation as another AgentSession
+ * over the same provider session, so it needed no change. Cascades with its
+ * task, because a note about a task that is gone is not history, it is litter.
+ */
+const MIGRATION_002: Migration = {
+  version: 2,
+  name: 'task-review-notes',
+  up: `
+CREATE TABLE task_review_notes (
+  id                   TEXT PRIMARY KEY,
+  task_id              TEXT NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+  -- The run this note was written about, and the revision it started.
+  about_session_id     TEXT REFERENCES agent_sessions (id) ON DELETE SET NULL,
+  triggered_session_id TEXT REFERENCES agent_sessions (id) ON DELETE SET NULL,
+  author               TEXT NOT NULL,
+  body                 TEXT NOT NULL,
+  created_at           TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX idx_task_review_notes_task ON task_review_notes (task_id, created_at);
+`,
+};
+
+export const MIGRATIONS: readonly Migration[] = [MIGRATION_001, MIGRATION_002];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
   (highest, migration) => Math.max(highest, migration.version),

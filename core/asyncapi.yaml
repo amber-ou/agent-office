@@ -180,6 +180,8 @@ components:
         - $ref: '#/components/schemas/RunTask'
         - $ref: '#/components/schemas/CancelTaskRun'
         - $ref: '#/components/schemas/RequestOutputContent'
+        - $ref: '#/components/schemas/AcceptTask'
+        - $ref: '#/components/schemas/RequestTaskChanges'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -1768,7 +1770,8 @@ components:
         after every change to that project, its knowledge or its tasks.
       type: object
       additionalProperties: false
-      required: [type, project, memberships, knowledge, tasks, sessions, outputs]
+      required:
+        [type, project, memberships, knowledge, tasks, sessions, outputs, reviewNotes]
       properties:
         type:
           const: projectDetail
@@ -1796,6 +1799,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OfficeOutput'
+        reviewNotes:
+          description: |
+            Human review feedback, oldest first. Part of the task's history and
+            never of any agent's knowledge.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeReviewNote'
 
     OfficeSession:
       description: |
@@ -1846,6 +1856,56 @@ components:
         type:
           type: string
         createdAt:
+          type: string
+
+    OfficeReviewNote:
+      type: object
+      additionalProperties: false
+      required: [id, taskId, author, body, createdAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        aboutSessionId:
+          description: The run this feedback was written about.
+          type: string
+        triggeredSessionId:
+          description: The revision run this feedback started.
+          type: string
+        author:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+
+    AcceptTask:
+      description: |
+        Accept a reviewed result: the task becomes done. No runtime is invoked
+        and no output or run history is touched.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: acceptTask
+        taskId:
+          type: string
+
+    RequestTaskChanges:
+      description: |
+        Send a reviewed task back for changes with human feedback, continuing
+        the same Claude session. The feedback is required and non-empty.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, feedback]
+      properties:
+        type:
+          const: requestTaskChanges
+        taskId:
+          type: string
+        feedback:
           type: string
 
     OutputContent:

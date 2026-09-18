@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
+import type { ReviewNoteStore } from '../reviewNotes.js';
 import { SqliteDatabase } from './database.js';
 import { FileBlobStore } from './fileBlobStore.js';
 import type { Migration } from './migrations.js';
@@ -30,6 +31,7 @@ import {
   SqliteSkillRepository,
   SqliteTaskRepository,
 } from './repositories.js';
+import { SqliteReviewNoteStore } from './reviewNotes.js';
 import { SqliteUnitOfWork } from './unitOfWork.js';
 
 export const DEFAULT_DATA_DIR_NAME = '.agent-office';
@@ -55,6 +57,12 @@ export interface OpenSqliteStorageOptions {
 export interface SqliteStorage {
   repos: Repositories;
   uow: UnitOfWork;
+  /**
+   * Human review notes. Beside the domain repositories rather than inside
+   * `Repositories`, because it is an application record and the frozen domain
+   * port stays as it is.
+   */
+  reviews: ReviewNoteStore;
   db: SqliteDatabase;
   /** Where the database and blobs live. */
   dataRoot: string;
@@ -105,6 +113,8 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
   return {
     repos,
     uow: new SqliteUnitOfWork(db, repos, blobs),
+    // Shares the connection, so a note joins whatever transaction is open.
+    reviews: new SqliteReviewNoteStore(db),
     db,
     dataRoot,
     databasePath,

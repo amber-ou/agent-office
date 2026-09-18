@@ -95,7 +95,9 @@ export type ClientMessage =
   | DeleteTask
   | RunTask
   | CancelTaskRun
-  | RequestOutputContent;
+  | RequestOutputContent
+  | AcceptTask
+  | RequestTaskChanges;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -460,6 +462,7 @@ export interface ProjectDetail {
   tasks: OfficeTask[];
   sessions: OfficeSession[];
   outputs: OfficeOutput[];
+  reviewNotes: OfficeReviewNote[];
 }
 
 export interface OfficeProjectDetail {
@@ -507,6 +510,16 @@ export interface OfficeOutput {
   sessionId?: string;
   title: string;
   type: string;
+  createdAt: string;
+}
+
+export interface OfficeReviewNote {
+  id: string;
+  taskId: string;
+  aboutSessionId?: string;
+  triggeredSessionId?: string;
+  author: string;
+  body: string;
   createdAt: string;
 }
 
@@ -832,4 +845,15 @@ export interface CancelTaskRun {
 export interface RequestOutputContent {
   type: 'requestOutputContent';
   outputId: string;
+}
+
+export interface AcceptTask {
+  type: 'acceptTask';
+  taskId: string;
+}
+
+export interface RequestTaskChanges {
+  type: 'requestTaskChanges';
+  taskId: string;
+  feedback: string;
 }
