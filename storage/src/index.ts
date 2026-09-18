@@ -14,13 +14,42 @@
  */
 
 export type {
+  AgentCcFields,
   AgentFileStore,
   KnowledgeFileInput,
+  OfficeAgentMeta,
   SkillFileInput,
   StoredKnowledge,
   StoredSkill,
 } from './agentFiles.js';
+export type { CcBridgeBackfillReport } from './files/backfillCcBridge.js';
+export { backfillCcBridge } from './files/backfillCcBridge.js';
+export type { FileValidation } from './files/ccBridge.js';
+export {
+  ccFieldsFromAgent,
+  ccFieldsFromToolGrants,
+  ccIdentifierFor,
+  hasConflictMarkers,
+  officeMetaFromAgent,
+  qualifiedSkillName,
+  toolGrantsFromCcFields,
+  validateBridgeFile,
+} from './files/ccBridge.js';
+export type {
+  AgentDiscoveryPaths,
+  CcBridgeDamage,
+  CcBridgeSyncReport,
+} from './files/ccBridgeSync.js';
+export { syncCcBridge } from './files/ccBridgeSync.js';
+export type { LinkOutcome } from './files/discoveryLinks.js';
+export {
+  ensureDirectoryLink,
+  isOurLink,
+  removeDirectoryLinkIfOurs,
+} from './files/discoveryLinks.js';
 export { AGENTS_DIR_NAME, FileAgentStore } from './files/fileAgentStore.js';
+export type { ImportAgentsReport } from './files/importAgentsFromDisk.js';
+export { importAgentsFromDisk } from './files/importAgentsFromDisk.js';
 export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
 export { migrateAgentFiles } from './files/migrateAgentFiles.js';
 export { clone, InMemoryRepository } from './memory/inMemoryRepository.js';

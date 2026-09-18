@@ -412,7 +412,7 @@ describe('Agent Office runtime smoke test', () => {
 
     // The files really are on disk, written by the server process.
     const agentDir = path.join(dataRoot, 'agents', agentId);
-    expect(fs.readFileSync(path.join(agentDir, 'instructions.md'), 'utf8')).toBe(
+    expect(fs.readFileSync(path.join(agentDir, 'discovery', 'agent.md'), 'utf8')).toContain(
       'Cite the transcript.',
     );
     const skillDir = fs.readdirSync(path.join(agentDir, 'skills'))[0]!;
@@ -441,7 +441,7 @@ describe('Agent Office runtime smoke test', () => {
       expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
       expect(detail.skills[0]!.content).toBe('Ask open questions.');
       expect(detail.knowledge[0]!.content).toBe('Start with context questions.');
-      expect(fs.existsSync(path.join(agentDir, 'instructions.md'))).toBe(true);
+      expect(fs.existsSync(path.join(agentDir, 'discovery', 'agent.md'))).toBe(true);
     } finally {
       reopened.close();
     }

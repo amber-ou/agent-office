@@ -374,12 +374,15 @@ describe('OfficeService', () => {
     });
 
     const agentDir = path.join(dataRoot, 'agents', agent.id);
-    expect(fs.existsSync(path.join(agentDir, 'instructions.md'))).toBe(true);
-    expect(fs.readFileSync(path.join(agentDir, 'instructions.md'), 'utf8')).toBe(
+    expect(fs.existsSync(path.join(agentDir, 'discovery', 'agent.md'))).toBe(true);
+    expect(fs.readFileSync(path.join(agentDir, 'discovery', 'agent.md'), 'utf8')).toContain(
       'Cite the transcript.',
     );
     expect(fs.readdirSync(path.join(agentDir, 'skills'))).toHaveLength(1);
-    expect(fs.readdirSync(path.join(agentDir, 'knowledge'))).toHaveLength(1);
+    // knowledge/ also holds the generated index.md — real items are the rest.
+    expect(
+      fs.readdirSync(path.join(agentDir, 'knowledge')).filter((name) => name !== 'index.md'),
+    ).toHaveLength(1);
 
     // And that is what the office reads back, after a restart.
     const detail = (await reopen().agentDetail(agent.id))!;
@@ -411,7 +414,9 @@ describe('OfficeService', () => {
     expect(detail.agent.name).toBe('Research Agent');
     expect(detail.skills.map((s) => s.id)).toEqual([skill.id]);
     // The directory is still the id; nothing was moved.
-    expect(fs.existsSync(path.join(dataRoot, 'agents', agent.id, 'instructions.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dataRoot, 'agents', agent.id, 'discovery', 'agent.md'))).toBe(
+      true,
+    );
   });
 
   it('will not let one agent reach another-s files through the office API', async () => {
@@ -485,7 +490,7 @@ describe('OfficeService', () => {
     await getOfficeStorage()!.agentMigrations.forget(agent.id as never);
     fs.rmSync(path.join(dataRoot, 'agents', agent.id, 'agent.json'));
     fs.writeFileSync(
-      path.join(dataRoot, 'agents', agent.id, 'instructions.md'),
+      path.join(dataRoot, 'agents', agent.id, 'discovery', 'agent.md'),
       'HAND-EDITED',
       'utf8',
     );
@@ -497,7 +502,7 @@ describe('OfficeService', () => {
     expect(detail.configIssue).toMatch(/disagree/i);
     expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
     expect(
-      fs.readFileSync(path.join(dataRoot, 'agents', agent.id, 'instructions.md'), 'utf8'),
+      fs.readFileSync(path.join(dataRoot, 'agents', agent.id, 'discovery', 'agent.md'), 'utf8'),
     ).toBe('HAND-EDITED');
 
     // Editing is refused rather than picking one of two disagreeing sources.

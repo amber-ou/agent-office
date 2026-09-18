@@ -29,6 +29,7 @@ import type {
 } from '../../../domain/src/index.js';
 import { defaultContextBudget } from '../../../domain/src/index.js';
 import type { AgentFileStore, AgentMigrationStore } from '../../../storage/src/index.js';
+import { hasConflictMarkers } from '../../../storage/src/index.js';
 
 /** What every agent is told, regardless of who it is or what it is doing. */
 export const GLOBAL_INSTRUCTIONS = [
@@ -146,6 +147,14 @@ export async function assembleContext(
   }
 
   const instructions = fileBacked ? await agentFiles.readInstructions(agent.id) : null;
+  // `discovery/agent.md` is edited by both Office and Claude Code (see ADR
+  // 007's Claude Code bridge). A file a person or a git merge left mid-
+  // conflict must never become a running agent's instructions.
+  if (instructions !== null && hasConflictMarkers(instructions)) {
+    throw new Error(
+      `agent ${agent.id}'s instructions file has unresolved conflict markers; resolve them before running its tasks`,
+    );
+  }
   const effectiveAgent = instructions === null ? agent : { ...agent, systemPrompt: instructions };
 
   const request: AgentContextRequest = {

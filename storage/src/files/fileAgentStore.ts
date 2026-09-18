@@ -22,20 +22,31 @@ import {
   isCanonicalId,
 } from '../../../domain/src/index.js';
 import type {
+  AgentCcFields,
   AgentFileStore,
   KnowledgeFileInput,
+  OfficeAgentMeta,
   SkillFileInput,
   StoredKnowledge,
   StoredSkill,
 } from '../agentFiles.js';
-import { listField, parseDocument, serializeDocument, textField } from './frontMatter.js';
+import {
+  listField,
+  type ParsedDocument,
+  parseDocument,
+  serializeDocument,
+  textField,
+} from './frontMatter.js';
 
 export const AGENTS_DIR_NAME = 'agents';
 const AGENT_MARKER = 'agent.json';
-const INSTRUCTIONS_FILE = 'instructions.md';
+const DISCOVERY_DIR = 'discovery';
+const AGENT_MD_NAME = 'agent.md';
+const OFFICE_META_FILE = 'office.json';
 const SKILLS_DIR = 'skills';
 const SKILL_FILE = 'SKILL.md';
 const KNOWLEDGE_DIR = 'knowledge';
+const KNOWLEDGE_INDEX_NAME = 'index.md';
 
 /** The marker file. Identity only — never a second copy of editable fields. */
 interface AgentMarker {
@@ -51,6 +62,7 @@ export class FileAgentStore implements AgentFileStore {
 
   async ensureAgent(agentId: AgentId, now: Timestamp): Promise<void> {
     const dir = this.agentDir(agentId);
+    fs.mkdirSync(path.join(dir, DISCOVERY_DIR), { recursive: true });
     fs.mkdirSync(path.join(dir, SKILLS_DIR), { recursive: true });
     fs.mkdirSync(path.join(dir, KNOWLEDGE_DIR), { recursive: true });
     if (!fs.existsSync(path.join(dir, AGENT_MARKER))) {
@@ -67,12 +79,124 @@ export class FileAgentStore implements AgentFileStore {
     this.writeMarker(agentId, { ...marker, migratedAt: now });
   }
 
+  // ── discovery/agent.md: the single source for instructions + CC fields ──
+  //
+  // Office and Claude Code both read and write this one file. Instructions
+  // live in the body; CC's own fields (name/description/tools/model) live in
+  // the front matter. Every write here is read-modify-write so a change to
+  // one half never clobbers the other.
+
   async readInstructions(agentId: AgentId): Promise<string | null> {
-    return readIfPresent(path.join(this.agentDir(agentId), INSTRUCTIONS_FILE));
+    return (await this.readAgentMd(agentId))?.body ?? null;
   }
 
   async writeInstructions(agentId: AgentId, instructions: string): Promise<void> {
-    writeAtomic(path.join(this.agentDir(agentId), INSTRUCTIONS_FILE), instructions);
+    const existing = await this.readAgentMd(agentId);
+    this.writeAgentMd(agentId, existing?.fields ?? {}, instructions);
+  }
+
+  async readCcFields(agentId: AgentId): Promise<AgentCcFields | null> {
+    const doc = await this.readAgentMd(agentId);
+    if (!doc) {
+      return null;
+    }
+    return {
+      name: textField(doc.fields, 'name') || undefined,
+      description: textField(doc.fields, 'description'),
+      tools: listField(doc.fields, 'tools'),
+      disallowedTools: listField(doc.fields, 'disallowedTools'),
+      model: textField(doc.fields, 'model') || undefined,
+    };
+  }
+
+  async writeCcFields(agentId: AgentId, fields: AgentCcFields): Promise<void> {
+    const existing = await this.readAgentMd(agentId);
+    // Name is sticky: once set, later calls cannot change CC's identity for
+    // this agent, even if the caller passes a different one.
+    const name = textField(existing?.fields ?? {}, 'name') || fields.name;
+    this.writeAgentMd(
+      agentId,
+      {
+        ...(name ? { name } : {}),
+        description: fields.description,
+        tools: [...fields.tools],
+        disallowedTools: [...fields.disallowedTools],
+        ...(fields.model ? { model: fields.model } : {}),
+      },
+      existing?.body ?? '',
+    );
+  }
+
+  private async readAgentMd(agentId: AgentId): Promise<ParsedDocument | null> {
+    const text = readIfPresent(this.agentMdPath(agentId));
+    if (text === null) {
+      return null;
+    }
+    return parseDocument(text);
+  }
+
+  private writeAgentMd(
+    agentId: AgentId,
+    fields: Record<string, string | string[]>,
+    body: string,
+  ): void {
+    const file = this.agentMdPath(agentId);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeAtomic(file, serializeDocument(fields, body));
+  }
+
+  private agentMdPath(agentId: AgentId): string {
+    return this.within(agentId, DISCOVERY_DIR, AGENT_MD_NAME);
+  }
+
+  // ── office.json: Office-only fields, disjoint from agent.md's ──
+
+  async readOfficeMeta(agentId: AgentId): Promise<OfficeAgentMeta | null> {
+    const text = readIfPresent(this.officeMetaPath(agentId));
+    if (text === null) {
+      return null;
+    }
+    try {
+      return JSON.parse(text) as OfficeAgentMeta;
+    } catch {
+      return null;
+    }
+  }
+
+  async writeOfficeMeta(agentId: AgentId, meta: OfficeAgentMeta): Promise<void> {
+    const file = this.officeMetaPath(agentId);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeAtomic(file, `${JSON.stringify(meta, null, 2)}\n`);
+  }
+
+  private officeMetaPath(agentId: AgentId): string {
+    return this.within(agentId, OFFICE_META_FILE);
+  }
+
+  // ── knowledge/index.md: a generated index, not a loader ──
+
+  async rebuildKnowledgeIndex(agentId: AgentId): Promise<void> {
+    const items = await this.listKnowledge(agentId);
+    const lines = [
+      '<!-- Generated by Agent Office. Do not hand-edit; it is rebuilt on every',
+      '     knowledge change and any edits here will be lost. -->',
+      '',
+      '# Knowledge index',
+      '',
+      items.length === 0
+        ? 'No knowledge items yet.'
+        : 'Read only the file(s) relevant to the current task — this index does not get loaded automatically.',
+      '',
+      ...items.map(
+        (stored) =>
+          `- \`${stored.item.id}.md\` — **${stored.item.title}** (${stored.item.type}` +
+          `${stored.item.tags.length > 0 ? `, tags: ${stored.item.tags.join(', ')}` : ''})`,
+      ),
+      '',
+    ];
+    const file = this.within(agentId, KNOWLEDGE_DIR, KNOWLEDGE_INDEX_NAME);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeAtomic(file, lines.join('\n'));
   }
 
   // ── Skills ─────────────────────────────────────────────────────

@@ -196,7 +196,7 @@ function makeFixtures(): Fixtures {
   for (const dir of [agentDir, project, configDir, workDir]) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const agentFile = path.join(agentDir, 'instructions.md');
+  const agentFile = path.join(agentDir, 'discovery', 'agent.md');
   fs.writeFileSync(agentFile, MARKER);
   fs.writeFileSync(path.join(project, 'README.md'), 'FIXTURE PROJECT');
   return { dataRoot, agentFile, project, configDir, workDir };

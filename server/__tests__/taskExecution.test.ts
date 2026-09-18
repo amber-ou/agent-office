@@ -387,7 +387,11 @@ describe('task execution', () => {
 
     // Edit the files directly: what the run sees must be what is on disk.
     const agentDir = path.join(dataRoot, 'agents', agentId);
-    fs.writeFileSync(path.join(agentDir, 'instructions.md'), 'INSTRUCTIONS-FROM-FILE', 'utf8');
+    fs.writeFileSync(
+      path.join(agentDir, 'discovery', 'agent.md'),
+      'INSTRUCTIONS-FROM-FILE',
+      'utf8',
+    );
     const before = snapshotTree(agentDir);
 
     claude.script = { result: 'done' };
