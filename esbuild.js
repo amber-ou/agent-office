@@ -35,6 +35,32 @@ function copyAssets() {
 }
 
 /**
+ * Copy the SQLite WASM binary to dist/.
+ *
+ * node-sqlite3-wasm resolves its .wasm as `__dirname + '/node-sqlite3-wasm.wasm'`.
+ * Once esbuild inlines the loader into dist/extension.js or dist/cli.js, that
+ * __dirname is dist/, so the binary has to sit there or the driver throws ENOENT
+ * on first open.
+ */
+function copySqliteWasm() {
+  const src = path.join(
+    __dirname,
+    'node_modules',
+    'node-sqlite3-wasm',
+    'dist',
+    'node-sqlite3-wasm.wasm',
+  );
+  const dstDir = path.join(__dirname, 'dist');
+  if (!fs.existsSync(src)) {
+    console.error('✘ node-sqlite3-wasm.wasm not found — Agent Office storage will not load');
+    return;
+  }
+  fs.mkdirSync(dstDir, { recursive: true });
+  fs.copyFileSync(src, path.join(dstDir, 'node-sqlite3-wasm.wasm'));
+  console.log('✓ Copied node-sqlite3-wasm.wasm → dist/');
+}
+
+/**
  * Bundle hook scripts (TypeScript) to dist/hooks via esbuild.
  * Produces a self-contained CJS file with shebang for Claude Code to execute.
  */
@@ -107,6 +133,7 @@ async function main() {
     await ctx.dispose();
     // Copy assets and hooks after build
     copyAssets();
+    copySqliteWasm();
     buildHooks();
     await buildCli();
     await buildUninstall();

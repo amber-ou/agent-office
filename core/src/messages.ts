@@ -38,7 +38,9 @@ export type ServerMessage =
   | ExternalAssetDirectoriesUpdated
   | AreaMappingsLoaded
   | WorkspaceFolders
-  | AgentDiagnostics;
+  | AgentDiagnostics
+  | OfficeState
+  | OfficeError;
 
 export type ClientMessage =
   | WebviewReady
@@ -62,7 +64,14 @@ export type ClientMessage =
   | RemoveExternalAssetDirectory
   | SaveAreaMappings
   | SetShowAreas
-  | RequestDiagnostics;
+  | RequestDiagnostics
+  | RequestOffice
+  | CreateProject
+  | SetActiveProject
+  | CreateAgent
+  | AddAgentToProject
+  | RemoveAgentFromProject
+  | CreateTask;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -315,6 +324,69 @@ export interface AgentDiagnostics {
   agents: Record<string, any>[];
 }
 
+export interface OfficeState {
+  type: 'officeState';
+  storage: OfficeStorageStatus;
+  projects: OfficeProject[];
+  agents: OfficeAgent[];
+  memberships: OfficeMembership[];
+  tasks: OfficeTask[];
+  activeProjectId?: string;
+}
+
+export interface OfficeStorageStatus {
+  ready: boolean;
+  schemaVersion: number;
+  databasePath?: string;
+  error?: string;
+}
+
+export interface OfficeProject {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficeAgent {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  systemPrompt?: string;
+  provider: string;
+  model?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficeMembership {
+  id: string;
+  projectId: string;
+  agentId: string;
+  seatId?: string;
+}
+
+export interface OfficeTask {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  assignedAgentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficeError {
+  type: 'officeError';
+  operation: string;
+  message: string;
+}
+
 export interface WebviewReady {
   type: 'webviewReady';
 }
@@ -428,4 +500,49 @@ export interface SetShowAreas {
 
 export interface RequestDiagnostics {
   type: 'requestDiagnostics';
+}
+
+export interface RequestOffice {
+  type: 'requestOffice';
+}
+
+export interface CreateProject {
+  type: 'createProject';
+  name: string;
+  description?: string;
+}
+
+export interface SetActiveProject {
+  type: 'setActiveProject';
+  projectId?: string;
+}
+
+export interface CreateAgent {
+  type: 'createAgent';
+  name: string;
+  role: string;
+  provider: string;
+  description?: string;
+  systemPrompt?: string;
+  model?: string;
+}
+
+export interface AddAgentToProject {
+  type: 'addAgentToProject';
+  projectId: string;
+  agentId: string;
+}
+
+export interface RemoveAgentFromProject {
+  type: 'removeAgentFromProject';
+  projectId: string;
+  agentId: string;
+}
+
+export interface CreateTask {
+  type: 'createTask';
+  projectId: string;
+  title: string;
+  description?: string;
+  assignedAgentId?: string;
 }

@@ -34,6 +34,10 @@ import {
   setHooksEnabled as persistHooksEnabled,
   writeConfig,
 } from '../../server/src/configPersistence.js';
+import {
+  isOfficeClientMessage,
+  OfficeSession,
+} from '../../server/src/control/officeMessageHandler.js';
 import { setFolderNameResolver, setTerminalAdapter } from '../../server/src/fileWatcher.js';
 import type { LayoutWatcher } from '../../server/src/layoutPersistence.js';
 import {
@@ -416,7 +420,18 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
+    // One control-plane session per webview, matching the standalone socket.
+    const office = new OfficeSession();
     webviewView.webview.onDidReceiveMessage(async (message) => {
+      // Agent Office control plane (projects, agents, memberships, tasks).
+      if (isOfficeClientMessage(message.type)) {
+        await office.handle(message, (m) => void webviewView.webview.postMessage(m));
+        return;
+      }
+      if (message.type === 'webviewReady') {
+        void office.initialState().then((state) => webviewView.webview.postMessage(state));
+        // Falls through: upstream's own webviewReady handling still runs.
+      }
       if (message.type === 'launchAgent') {
         const prevAgentIds = new Set(this.store.keys());
         await launchNewTerminal(

@@ -1,3 +1,4 @@
+import type { ClientMessage } from '../../core/src/messages.js';
 import type { HookProvider } from '../../core/src/provider.js';
 import { resendAgentActivity } from './agentActivityResend.js';
 import { buildAgentDiagnostics } from './agentDiagnostics.js';
@@ -12,6 +13,8 @@ import {
   writeConfig,
 } from './configPersistence.js';
 import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT } from './constants.js';
+import type { OfficeSession } from './control/officeMessageHandler.js';
+import { isOfficeClientMessage } from './control/officeMessageHandler.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
@@ -60,6 +63,8 @@ export interface ClientMessageContext {
    * to false so a caller that forgets to pass it gets the safe answer.
    */
   privileged?: boolean;
+  /** Per-connection Agent Office control-plane session. */
+  office?: OfficeSession;
 }
 
 // ── Setting key constants (mirror adapters/vscode/constants.ts) ──
@@ -85,6 +90,13 @@ export function handleClientMessage(
 ): void {
   const { store, runtime, cache } = ctx;
   const adapter = store.getAdapter();
+
+  // Agent Office control plane (projects, agents, memberships, tasks). Handled
+  // by its own session object so the switch below stays upstream's.
+  if (isOfficeClientMessage(msg.type) && ctx.office) {
+    void ctx.office.handle(msg as unknown as ClientMessage, send);
+    return;
+  }
 
   switch (msg.type) {
     case 'webviewReady':
@@ -356,6 +368,13 @@ function standaloneConsentEffects(
 }
 
 function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
+  // Open the Agent Office database and push the first snapshot alongside the
+  // rest of the ready handshake, so the office has its persisted state from the
+  // first frame rather than after a round trip.
+  if (ctx.office) {
+    void ctx.office.initialState().then(send);
+  }
+
   const { store, runtime, cache } = ctx;
   const adapter = store.getAdapter();
 

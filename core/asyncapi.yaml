@@ -118,6 +118,9 @@ components:
         - $ref: '#/components/schemas/WorkspaceFolders'
         # Diagnostics
         - $ref: '#/components/schemas/AgentDiagnostics'
+        # Agent Office control plane
+        - $ref: '#/components/schemas/OfficeState'
+        - $ref: '#/components/schemas/OfficeError'
       discriminator: type
 
     ClientMessage:
@@ -144,6 +147,14 @@ components:
         - $ref: '#/components/schemas/SaveAreaMappings'
         - $ref: '#/components/schemas/SetShowAreas'
         - $ref: '#/components/schemas/RequestDiagnostics'
+        # Agent Office control plane
+        - $ref: '#/components/schemas/RequestOffice'
+        - $ref: '#/components/schemas/CreateProject'
+        - $ref: '#/components/schemas/SetActiveProject'
+        - $ref: '#/components/schemas/CreateAgent'
+        - $ref: '#/components/schemas/AddAgentToProject'
+        - $ref: '#/components/schemas/RemoveAgentFromProject'
+        - $ref: '#/components/schemas/CreateTask'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -1196,3 +1207,250 @@ components:
           type: string
         frame:
           type: integer
+
+    # ── Agent Office control plane ─────────────────────────────────
+    # Persistent Projects, Agents, memberships and Tasks, backed by SQLite.
+    # The office UI never touches the database; it speaks only these messages.
+
+    OfficeState:
+      description: |
+        Full snapshot of the Agent Office control plane. Re-sent after every
+        mutation — the data set is small and a whole snapshot cannot drift the
+        way a stream of incremental patches can.
+      type: object
+      additionalProperties: false
+      required: [type, storage, projects, agents, memberships, tasks]
+      properties:
+        type:
+          const: officeState
+        storage:
+          $ref: '#/components/schemas/OfficeStorageStatus'
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeProject'
+        agents:
+          description: Every agent in the office. Agents are global, not owned by a project.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeAgent'
+        memberships:
+          description: Project-agent memberships for the active project only.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeMembership'
+        tasks:
+          description: Tasks of the active project only.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTask'
+        activeProjectId:
+          type: string
+
+    OfficeError:
+      description: A control-plane operation failed. Reported to the client that asked.
+      type: object
+      additionalProperties: false
+      required: [type, operation, message]
+      properties:
+        type:
+          const: officeError
+        operation:
+          type: string
+        message:
+          type: string
+
+    OfficeStorageStatus:
+      type: object
+      additionalProperties: false
+      required: [ready, schemaVersion]
+      properties:
+        ready:
+          type: boolean
+        schemaVersion:
+          type: integer
+        databasePath:
+          type: string
+        error:
+          type: string
+
+    OfficeProject:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeAgent:
+      type: object
+      additionalProperties: false
+      required: [id, name, role, description, provider, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeMembership:
+      type: object
+      additionalProperties: false
+      required: [id, projectId, agentId]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        agentId:
+          type: string
+        seatId:
+          type: string
+
+    OfficeTask:
+      type: object
+      additionalProperties: false
+      required: [id, projectId, title, description, status, priority, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        assignedAgentId:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    RequestOffice:
+      description: Ask for the current office snapshot, opening the database if needed.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestOffice
+
+    CreateProject:
+      description: Create a Project. Nothing is seeded with it.
+      type: object
+      additionalProperties: false
+      required: [type, name]
+      properties:
+        type:
+          const: createProject
+        name:
+          type: string
+        description:
+          type: string
+
+    SetActiveProject:
+      description: Choose which project the office shows. Omit projectId to clear it.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: setActiveProject
+        projectId:
+          type: string
+
+    CreateAgent:
+      description: |
+        Create a global Agent. Fields mirror AgentDefinition exactly; the office
+        adds none of its own.
+      type: object
+      additionalProperties: false
+      required: [type, name, role, provider]
+      properties:
+        type:
+          const: createAgent
+        name:
+          type: string
+        role:
+          type: string
+        provider:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        model:
+          type: string
+
+    AddAgentToProject:
+      description: Add an existing global Agent to a Project as a member.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, agentId]
+      properties:
+        type:
+          const: addAgentToProject
+        projectId:
+          type: string
+        agentId:
+          type: string
+
+    RemoveAgentFromProject:
+      description: |
+        Remove a membership. The global Agent, its skills and its knowledge are
+        untouched, as are its memberships of other projects.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, agentId]
+      properties:
+        type:
+          const: removeAgentFromProject
+        projectId:
+          type: string
+        agentId:
+          type: string
+
+    CreateTask:
+      description: Create a Task inside a Project.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, title]
+      properties:
+        type:
+          const: createTask
+        projectId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        assignedAgentId:
+          type: string
