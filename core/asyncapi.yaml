@@ -1546,9 +1546,16 @@ components:
           const: agentDetail
         fileBacked:
           description: |
-            False while a migration conflict keeps this agent reading from the
-            database. Editing is refused until the conflict is resolved.
+            True only when this agent's own files own its configuration AND
+            they are readable. False while a migration conflict keeps it on the
+            database, or when its files have gone missing. Editing is refused
+            either way.
           type: boolean
+        configIssue:
+          description: |
+            What needs a person: a first-migration conflict, or a file-backed
+            agent whose files are missing. Absent when all is well.
+          type: string
         agent:
           $ref: '#/components/schemas/OfficeAgent'
         skills:

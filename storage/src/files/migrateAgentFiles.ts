@@ -14,6 +14,13 @@
  *  - Rerunning is a no-op. An interrupted run resumes: whatever was written
  *    matches and is skipped, whatever was not is written now, and the agent is
  *    marked only once the whole set validates.
+ *  - **An agent that has already moved is never written from the database
+ *    again.** Completion is recorded in the database, not only in the agent's
+ *    own directory, so a lost or emptied directory reads as DAMAGE to repair
+ *    from a backup — not as an agent that never moved, and never as a silent
+ *    rebuild of whatever the legacy rows still happen to say. Deleting a
+ *    migrated skill is a normal edit; resurrecting it would be data loss in
+ *    the other direction.
  */
 
 import type {
@@ -23,6 +30,7 @@ import type {
   Timestamp,
 } from '../../../domain/src/index.js';
 import type { AgentFileStore } from '../agentFiles.js';
+import type { AgentMigrationStore } from '../sqlite/agentMigrations.js';
 
 export interface MigrationConflict {
   agentId: AgentId;
@@ -37,6 +45,11 @@ export interface AgentMigrationReport {
   migrated: AgentId[];
   /** Agents left on the database because something needs a person. */
   blocked: AgentId[];
+  /**
+   * Agents the database says are file-backed whose files are missing or
+   * unreadable. Nothing is rebuilt for them: the fix is restoring the backup.
+   */
+  damaged: AgentId[];
   conflicts: MigrationConflict[];
   /** Resources written by this run. Empty on a second run. */
   written: number;
@@ -51,12 +64,36 @@ export interface AgentMigrationReport {
 export async function migrateAgentFiles(
   repos: Repositories,
   files: AgentFileStore,
+  state: AgentMigrationStore,
   now: Timestamp,
 ): Promise<AgentMigrationReport> {
-  const report: AgentMigrationReport = { migrated: [], blocked: [], conflicts: [], written: 0 };
+  const report: AgentMigrationReport = {
+    migrated: [],
+    blocked: [],
+    damaged: [],
+    conflicts: [],
+    written: 0,
+  };
 
   for (const agent of await repos.agents.list()) {
-    if (await files.isMigrated(agent.id)) {
+    if (await state.isMigrated(agent.id)) {
+      // Already handed over. Whatever the legacy rows still hold is history,
+      // and the only question left is whether the files are still there.
+      if ((await files.readInstructions(agent.id)) === null) {
+        report.damaged.push(agent.id);
+        report.conflicts.push({
+          agentId: agent.id,
+          resource: 'instructions',
+          detail:
+            'this agent is file-backed but its files are missing or unreadable; nothing was rebuilt from the database — restore the agents directory from a backup',
+        });
+        continue;
+      }
+      // The in-directory marker is a convenience copy; restore it if it was
+      // the only thing lost. No content is written.
+      if (!(await files.isMigrated(agent.id))) {
+        await files.markMigrated(agent.id, now);
+      }
       report.migrated.push(agent.id);
       continue;
     }
@@ -71,6 +108,7 @@ export async function migrateAgentFiles(
       continue;
     }
     await files.markMigrated(agent.id, now);
+    await state.markMigrated(agent.id, now);
     report.migrated.push(agent.id);
   }
 

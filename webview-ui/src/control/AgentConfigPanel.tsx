@@ -181,8 +181,8 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
       >
         {!detail.fileBacked && (
           <div className="border-2 border-warning p-6 text-warning text-sm">
-            This agent&apos;s files disagree with its stored configuration, so editing is refused
-            until that is resolved. Both copies have been kept.
+            {detail.configIssue ?? "This agent's configuration cannot be edited right now."} Editing
+            is refused until that is resolved.
           </div>
         )}
         {error && <div className="border-2 border-warning p-6 text-warning text-sm">{error}</div>}

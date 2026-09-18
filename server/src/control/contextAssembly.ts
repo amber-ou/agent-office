@@ -28,7 +28,7 @@ import type {
   Task,
 } from '../../../domain/src/index.js';
 import { defaultContextBudget } from '../../../domain/src/index.js';
-import type { AgentFileStore } from '../../../storage/src/index.js';
+import type { AgentFileStore, AgentMigrationStore } from '../../../storage/src/index.js';
 
 /** What every agent is told, regardless of who it is or what it is doing. */
 export const GLOBAL_INSTRUCTIONS = [
@@ -80,6 +80,7 @@ export interface AssembledContext {
 export interface ContextSources {
   repos: Repositories;
   agentFiles: AgentFileStore;
+  agentMigrations: AgentMigrationStore;
 }
 
 /**
@@ -99,7 +100,7 @@ export async function assembleContext(
   task: Task,
   budget: ContextBudget = defaultContextBudget(),
 ): Promise<AssembledContext> {
-  const { repos, agentFiles } = sources;
+  const { repos, agentFiles, agentMigrations } = sources;
   if (task.assignedAgentId === undefined) {
     throw new Error('task has no assigned agent');
   }
@@ -114,7 +115,15 @@ export async function assembleContext(
     throw new Error(`project not found: ${task.projectId}`);
   }
 
-  const fileBacked = await agentFiles.isMigrated(agent.id);
+  // Whether this agent moved to files is recorded in the database, not in the
+  // files themselves — so files that have gone missing are an error here rather
+  // than a silent fall back to whatever the legacy rows still say.
+  const fileBacked = await agentMigrations.isMigrated(agent.id);
+  if (fileBacked && (await agentFiles.readInstructions(agent.id)) === null) {
+    throw new Error(
+      `agent ${agent.id} is file-backed but its files are missing; restore the agents directory from a backup before running its tasks`,
+    );
+  }
   const contents = new Map<string, string>();
 
   const [storedSkills, storedKnowledge] = fileBacked

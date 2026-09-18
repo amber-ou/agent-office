@@ -455,6 +455,7 @@ export class OfficeSession {
         skills: detail.skills.map(toOfficeSkill),
         knowledge: detail.knowledge.map(toOfficeAgentKnowledge),
         fileBacked: detail.fileBacked,
+        ...(detail.configIssue === undefined ? {} : { configIssue: detail.configIssue }),
       }),
     );
   }

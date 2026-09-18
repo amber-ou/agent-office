@@ -471,7 +471,7 @@ describe('OfficeService', () => {
     expect(fs.readdirSync(path.join(dataRoot, 'agents'))).toEqual([agent.id]);
   });
 
-  it('migrates a legacy agent and refuses to edit one whose files conflict', async () => {
+  it('refuses to edit an agent whose FIRST migration hit a conflict', async () => {
     const office = service();
     const agent = await office.createAgent({
       name: 'UX',
@@ -480,19 +480,21 @@ describe('OfficeService', () => {
       systemPrompt: 'Cite the transcript.',
     });
 
-    // Someone edits the file by hand into something the database disagrees with.
+    // Put the agent back where a pre-M5 one starts: known to the database, not
+    // yet recorded as moved. Then leave a file that disagrees with the row.
+    await getOfficeStorage()!.agentMigrations.forget(agent.id as never);
+    fs.rmSync(path.join(dataRoot, 'agents', agent.id, 'agent.json'));
     fs.writeFileSync(
       path.join(dataRoot, 'agents', agent.id, 'instructions.md'),
       'HAND-EDITED',
       'utf8',
     );
-    // Drop the marker so the next open has to migrate it again.
-    fs.rmSync(path.join(dataRoot, 'agents', agent.id, 'agent.json'));
 
     const after = reopen();
     const detail = (await after.agentDetail(agent.id))!;
     // Blocked: it reads the database and says so, and both copies survive.
     expect(detail.fileBacked).toBe(false);
+    expect(detail.configIssue).toMatch(/disagree/i);
     expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
     expect(
       fs.readFileSync(path.join(dataRoot, 'agents', agent.id, 'instructions.md'), 'utf8'),
@@ -505,6 +507,33 @@ describe('OfficeService', () => {
     await expect(
       after.createSkill({ agentId: agent.id, slug: 's', name: 'S', kind: 'workflow' }),
     ).rejects.toThrow(/resolve the conflict/);
+  });
+
+  it('treats an ordinary edit of a migrated agent as an edit, not a conflict', async () => {
+    const office = service();
+    const agent = await office.createAgent({
+      name: 'UX',
+      role: 'ux',
+      provider: 'claude',
+      systemPrompt: 'Cite the transcript.',
+    });
+    const skill = await office.createSkill({
+      agentId: agent.id,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+
+    await office.updateAgent({ agentId: agent.id, systemPrompt: 'EDITED' });
+    expect(await office.deleteSkill({ agentId: agent.id, skillId: skill.id })).toBe(true);
+
+    // Reopening runs the migration again; it must leave all of that alone.
+    const detail = (await reopen().agentDetail(agent.id))!;
+    expect(detail.fileBacked).toBe(true);
+    expect(detail.configIssue).toBeUndefined();
+    expect(detail.agent.systemPrompt).toBe('EDITED');
+    expect(detail.skills).toEqual([]);
   });
 
   // ── Project workspace ────────────────────────────────────────

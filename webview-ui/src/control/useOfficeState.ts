@@ -35,8 +35,10 @@ export interface AgentDetailView {
   agent: OfficeAgent;
   skills: OfficeSkill[];
   knowledge: OfficeAgentKnowledge[];
-  /** False while a migration conflict keeps this agent read-only. */
+  /** False while a conflict or missing files keep this agent read-only. */
   fileBacked: boolean;
+  /** What needs a person, when something does. */
+  configIssue?: string;
 }
 
 /** The workspace of the one project this window has open, if any. */
@@ -219,6 +221,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
             skills: detail.skills,
             knowledge: detail.knowledge,
             fileBacked: detail.fileBacked !== false,
+            ...(detail.configIssue === undefined ? {} : { configIssue: detail.configIssue }),
           },
           error: null,
         }));

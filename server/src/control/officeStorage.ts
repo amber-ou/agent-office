@@ -16,6 +16,7 @@ import { systemClock } from '../../../domain/src/index.js';
 import type {
   AgentFileStore,
   AgentMigrationReport,
+  AgentMigrationStore,
   ReviewNoteStore,
   SqliteStorage,
 } from '../../../storage/src/index.js';
@@ -33,6 +34,8 @@ export interface OfficeStorage {
   reviews: ReviewNoteStore;
   /** Agent-owned files: instructions, skills, foundational knowledge. */
   agentFiles: AgentFileStore;
+  /** Which agents have moved to files. Durable, and not inside those files. */
+  agentMigrations: AgentMigrationStore;
   databasePath: string;
   schemaVersion: number;
 }
@@ -88,6 +91,7 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
     uow: storage.uow,
     reviews: storage.reviews,
     agentFiles: storage.agentFiles,
+    agentMigrations: storage.agentMigrations,
     databasePath: storage.databasePath,
     schemaVersion: storage.schemaVersion,
   };
@@ -95,7 +99,12 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
 
 async function runAgentFileMigration(storage: SqliteStorage): Promise<AgentMigrationReport | null> {
   try {
-    const report = await migrateAgentFiles(storage.repos, storage.agentFiles, systemClock.now());
+    const report = await migrateAgentFiles(
+      storage.repos,
+      storage.agentFiles,
+      storage.agentMigrations,
+      systemClock.now(),
+    );
     if (report.written > 0) {
       console.log(
         `[Agent Office] Migrated ${report.written} agent resource(s) to files under ${storage.agentFiles.root}`,
@@ -111,6 +120,11 @@ async function runAgentFileMigration(storage: SqliteStorage): Promise<AgentMigra
     if (report.blocked.length > 0) {
       console.warn(
         `[Agent Office] ${report.blocked.length} agent(s) still read from the database until the conflicts above are resolved.`,
+      );
+    }
+    if (report.damaged.length > 0) {
+      console.error(
+        `[Agent Office] ${report.damaged.length} file-backed agent(s) have missing or unreadable files. Nothing was rebuilt from the database; restore the agents directory from a backup.`,
       );
     }
     return report;

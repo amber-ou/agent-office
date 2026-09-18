@@ -18,6 +18,8 @@ import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
 import type { AgentFileStore } from '../agentFiles.js';
 import { AGENTS_DIR_NAME, FileAgentStore } from '../files/fileAgentStore.js';
 import type { ReviewNoteStore } from '../reviewNotes.js';
+import type { AgentMigrationStore } from './agentMigrations.js';
+import { SqliteAgentMigrationStore } from './agentMigrations.js';
 import { SqliteDatabase } from './database.js';
 import { FileBlobStore } from './fileBlobStore.js';
 import type { Migration } from './migrations.js';
@@ -70,6 +72,11 @@ export interface SqliteStorage {
    * authoritative source for those, once an agent has been migrated.
    */
   agentFiles: AgentFileStore;
+  /**
+   * Which agents have moved to files. Recorded here rather than only in the
+   * agent's directory, so a lost directory is damage rather than amnesia.
+   */
+  agentMigrations: AgentMigrationStore;
   db: SqliteDatabase;
   /** Where the database and blobs live. */
   dataRoot: string;
@@ -128,6 +135,7 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
     // Shares the connection, so a note joins whatever transaction is open.
     reviews: new SqliteReviewNoteStore(db),
     agentFiles,
+    agentMigrations: new SqliteAgentMigrationStore(db),
     db,
     dataRoot,
     databasePath,

@@ -230,7 +230,29 @@ CREATE INDEX idx_task_review_notes_task ON task_review_notes (task_id, created_a
 `,
 };
 
-export const MIGRATIONS: readonly Migration[] = [MIGRATION_001, MIGRATION_002];
+/**
+ * Migration 3 — which agents have moved to files (M5 Phase 1.1).
+ *
+ * "This agent is file-backed" has to survive the agent's own directory. The
+ * marker inside that directory cannot record it: if the directory is lost, the
+ * marker is lost with it, and a migration that trusts only the marker would
+ * rebuild the agent from stale legacy rows and call it a success.
+ *
+ * Operational state, not content: this table says WHERE an agent's
+ * configuration lives, never what it is.
+ */
+const MIGRATION_003: Migration = {
+  version: 3,
+  name: 'agent-file-migrations',
+  up: `
+CREATE TABLE agent_file_migrations (
+  agent_id    TEXT PRIMARY KEY REFERENCES agents (id) ON DELETE CASCADE,
+  migrated_at TEXT NOT NULL
+) STRICT;
+`,
+};
+
+export const MIGRATIONS: readonly Migration[] = [MIGRATION_001, MIGRATION_002, MIGRATION_003];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
   (highest, migration) => Math.max(highest, migration.version),

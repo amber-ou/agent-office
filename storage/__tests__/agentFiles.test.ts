@@ -25,6 +25,10 @@ import { migrateAgentFiles, openSqliteStorage } from '../src/index.js';
 const DEPS = { ids: uuidIdGenerator, clock: systemClock };
 const NOW = '2026-09-18T00:00:00.000Z';
 
+function migrate(): ReturnType<typeof migrateAgentFiles> {
+  return migrateAgentFiles(storage.repos, storage.agentFiles, storage.agentMigrations, NOW);
+}
+
 let dataRoot: string;
 let storage: SqliteStorage;
 
@@ -98,7 +102,7 @@ describe('agent file storage', () => {
 
   it('keeps every resource when the agent is renamed', async () => {
     const { agentId } = await legacyAgent();
-    await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    await migrate();
 
     const agent = (await storage.repos.agents.get(agentId))!;
     await storage.repos.agents.put({ ...agent, name: 'Research Agent' });
@@ -129,7 +133,7 @@ describe('agent file storage', () => {
   it('will not hand one agent another agent-s file', async () => {
     const one = await legacyAgent('One');
     const two = await legacyAgent('Two');
-    await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    await migrate();
 
     // Asking for the other agent's skill id under this agent finds nothing:
     // every path is built from the OWNER's id.
@@ -145,7 +149,7 @@ describe('agent file migration', () => {
   it('moves instructions, skills and knowledge without touching the originals', async () => {
     const { agentId, skill, knowledge } = await legacyAgent();
 
-    const report = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    const report = await migrate();
     expect(report.conflicts).toEqual([]);
     expect(report.migrated).toEqual([agentId]);
     expect(report.written).toBe(3);
@@ -167,8 +171,8 @@ describe('agent file migration', () => {
 
   it('is idempotent', async () => {
     await legacyAgent();
-    const first = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
-    const second = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    const first = await migrate();
+    const second = await migrate();
 
     expect(first.written).toBe(3);
     // Second run writes nothing and reports the same agent as done.
@@ -186,7 +190,7 @@ describe('agent file migration', () => {
     await storage.agentFiles.writeInstructions(agentId, 'Cite the transcript.');
     expect(await storage.agentFiles.isMigrated(agentId)).toBe(false);
 
-    const report = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    const report = await migrate();
     expect(report.conflicts).toEqual([]);
     expect(report.migrated).toEqual([agentId]);
     // Only the two missing resources were written the second time.
@@ -200,7 +204,7 @@ describe('agent file migration', () => {
     await storage.agentFiles.ensureAgent(agentId, NOW);
     await storage.agentFiles.writeInstructions(agentId, 'HAND-EDITED INSTRUCTIONS');
 
-    const report = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    const report = await migrate();
 
     expect(report.conflicts.map((c) => c.resource)).toContain('instructions');
     expect(report.blocked).toEqual([agentId]);
@@ -219,26 +223,78 @@ describe('agent file migration', () => {
     // The blob is gone; migrating would write an empty file over nothing.
     await storage.repos.blobs.delete(knowledge.location);
 
-    const report = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    const report = await migrate();
     expect(report.blocked).toEqual([agentId]);
     expect(report.conflicts.some((c) => c.resource === 'knowledge')).toBe(true);
     expect(await storage.agentFiles.readKnowledge(agentId, knowledge.id)).toBeNull();
   });
 
-  it('recovers by deleting the files: the database still has everything', async () => {
+  it('treats a file-backed agent with missing files as damage, not as un-migrated', async () => {
     const { agentId, skill, knowledge } = await legacyAgent();
-    await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
+    await migrate();
 
-    // Rollback is deleting the agent tree; the legacy rows never moved.
+    // Deleting the tree is NOT a recovery route once an agent has moved: the
+    // database still knows it is file-backed, and the legacy rows are only
+    // whatever was there at migration time.
     fs.rmSync(path.join(agentsRoot(), agentId), { recursive: true, force: true });
-    expect(await storage.agentFiles.isMigrated(agentId)).toBe(false);
-    expect((await storage.repos.agents.get(agentId))!.systemPrompt).toBe('Cite the transcript.');
+
+    const report = await migrate();
+    expect(report.damaged).toEqual([agentId]);
+    expect(report.migrated).toEqual([]);
+    // Nothing was rebuilt from the database.
+    expect(report.written).toBe(0);
+    expect(await storage.agentFiles.readInstructions(agentId)).toBeNull();
+    expect(await storage.agentFiles.listSkills(agentId)).toEqual([]);
+    // And the legacy rows are still there for whoever repairs it.
     expect(await storage.repos.skills.get(skill.id)).not.toBeNull();
     expect(await storage.repos.blobs.read(knowledge.location)).toBe('AGENT-KNOWLEDGE-BODY');
+  });
 
-    // And running the migration again rebuilds the files from them.
-    const again = await migrateAgentFiles(storage.repos, storage.agentFiles, NOW);
-    expect(again.written).toBe(3);
-    expect(again.conflicts).toEqual([]);
+  it('does not resurrect a deleted resource when only the marker is lost', async () => {
+    const { agentId, skill } = await legacyAgent();
+    await migrate();
+
+    // A normal edit, and a normal delete of something that came from the database.
+    await storage.agentFiles.writeInstructions(agentId, 'EDITED AFTER MIGRATION');
+    expect(await storage.agentFiles.deleteSkill(agentId, skill.id)).toBe(true);
+
+    // The in-directory marker is lost — a partial restore, say.
+    fs.rmSync(path.join(agentsRoot(), agentId, 'agent.json'));
+
+    const report = await migrate();
+    expect(report.migrated).toEqual([agentId]);
+    expect(report.conflicts).toEqual([]);
+    expect(report.written).toBe(0);
+    // The edit stands and the deletion stands: the legacy row did not come back.
+    expect(await storage.agentFiles.readInstructions(agentId)).toBe('EDITED AFTER MIGRATION');
+    expect(await storage.agentFiles.listSkills(agentId)).toEqual([]);
+    // The marker is restored so the directory describes itself again.
+    expect(await storage.agentFiles.isMigrated(agentId)).toBe(true);
+  });
+
+  it('keeps edits, additions and deletions across an ordinary reopen', async () => {
+    const { agentId, skill, knowledge } = await legacyAgent();
+    await migrate();
+
+    await storage.agentFiles.writeInstructions(agentId, 'EDITED');
+    await storage.agentFiles.writeSkill(
+      agentId,
+      DEPS.ids.next(),
+      { slug: 'new', name: 'File-only skill', kind: 'workflow', content: 'NEW BODY' },
+      { createdAt: NOW, updatedAt: NOW },
+    );
+    await storage.agentFiles.deleteSkill(agentId, skill.id);
+    await storage.agentFiles.deleteKnowledge(agentId, knowledge.id);
+
+    storage.close();
+    storage = openSqliteStorage({ dataRoot });
+    const report = await migrate();
+
+    expect(report.written).toBe(0);
+    expect(report.conflicts).toEqual([]);
+    expect(await storage.agentFiles.readInstructions(agentId)).toBe('EDITED');
+    const skills = await storage.agentFiles.listSkills(agentId);
+    expect(skills.map((s) => s.skill.slug)).toEqual(['new']);
+    expect(await storage.agentFiles.listKnowledge(agentId)).toEqual([]);
   });
 });

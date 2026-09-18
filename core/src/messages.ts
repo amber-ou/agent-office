@@ -427,6 +427,7 @@ export interface OfficeError {
 export interface AgentDetail {
   type: 'agentDetail';
   fileBacked?: boolean;
+  configIssue?: string;
   agent: OfficeAgent;
   skills: OfficeSkill[];
   knowledge: OfficeAgentKnowledge[];

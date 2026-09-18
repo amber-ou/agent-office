@@ -249,6 +249,9 @@ export class OfficeService {
     await this.files.ensureAgent(agent.id, now);
     await this.files.writeInstructions(agent.id, agent.systemPrompt);
     await this.files.markMigrated(agent.id, now);
+    // Recorded in the database too: that record, not the marker inside the
+    // directory, is what later tells "file-backed" apart from "never moved".
+    await this.storage.agentMigrations.markMigrated(agent.id, now);
     return agent;
   }
 
@@ -372,11 +375,19 @@ export class OfficeService {
     if (!stored) {
       return null;
     }
-    if (!(await this.fileBacked(agentId))) {
+    const source = await this.configSource(agentId);
+    if (source === 'database') {
       return this.legacyAgentDetail(stored);
     }
 
-    const agent = await this.hydrate(stored);
+    // `damaged` still reads the files — whatever survived — and says so. It
+    // never falls back to the legacy rows: stale content presented as current
+    // is worse than visibly missing content.
+    // Damaged reads nothing from the row either: the instructions in it are
+    // whatever was true at migration time, and showing those as the agent's
+    // current instructions is the same lie as rebuilding from them.
+    const agent =
+      source === 'damaged' ? { ...stored, systemPrompt: '' } : await this.hydrate(stored);
     const [skills, knowledge] = await Promise.all([
       this.files.listSkills(agentId),
       this.files.listKnowledge(agentId),
@@ -389,7 +400,13 @@ export class OfficeService {
         content: k.content,
         contentReadable: true,
       })),
-      fileBacked: true,
+      fileBacked: source === 'files',
+      ...(source === 'damaged'
+        ? {
+            configIssue:
+              'This agent is file-backed but its files are missing or unreadable. Nothing was rebuilt from the database. Restore the agents directory from a backup.',
+          }
+        : {}),
     };
   }
 
@@ -402,7 +419,14 @@ export class OfficeService {
     const resolved = await Promise.all(
       knowledge.map(async (item) => ({ item, ...(await this.readContent(item.location)) })),
     );
-    return { agent, skills, knowledge: resolved, fileBacked: false };
+    return {
+      agent,
+      skills,
+      knowledge: resolved,
+      fileBacked: false,
+      configIssue:
+        "This agent's files disagree with its stored configuration, so it is still read from the database and cannot be edited. Both copies have been kept.",
+    };
   }
 
   /**
@@ -417,30 +441,45 @@ export class OfficeService {
   }
 
   /**
-   * True when this agent's files are the authoritative source.
+   * Where this agent's configuration is read from, and whether that is healthy.
    *
    * Waits for the open database's migration first: an agent that is only
    * halfway through moving to files is not one anybody should be reading from,
    * or refusing writes for.
+   *
+   * The three answers are genuinely different situations, and collapsing them
+   * loses data:
+   *
+   *   files     the files own it, and they are there.
+   *   database  it has not moved yet, or its first migration hit a conflict.
+   *   damaged   the database says it moved, and its files are gone. Serving the
+   *             legacy rows here would quietly hand back a version of the agent
+   *             that may be months out of date, as if nothing were wrong.
    */
-  private async fileBacked(agentId: AgentId): Promise<boolean> {
+  private async configSource(agentId: AgentId): Promise<AgentConfigSource> {
     await awaitAgentFileMigration();
-    return this.files.isMigrated(agentId);
+    if (!(await this.storage.agentMigrations.isMigrated(agentId))) {
+      return 'database';
+    }
+    return (await this.files.readInstructions(agentId)) === null ? 'damaged' : 'files';
   }
 
   /**
-   * Refuse to write agent configuration that files do not yet own.
+   * Refuse to write agent configuration that files do not own and hold.
    *
-   * An agent is only ever not file-backed because its migration reported a
-   * conflict. Writing then would mean editing one of two disagreeing copies,
-   * which is exactly what this phase exists to stop.
+   * Writing to a conflicted agent would mean editing one of two disagreeing
+   * copies; writing to a damaged one would bury whatever is still recoverable.
    */
-  private async requireFileBacked(agentId: AgentId): Promise<void> {
-    if (!(await this.fileBacked(agentId))) {
-      throw new Error(
-        "this agent's files conflict with its stored configuration; resolve the conflict before editing it",
-      );
+  private async requireWritableFiles(agentId: AgentId): Promise<void> {
+    const source = await this.configSource(agentId);
+    if (source === 'files') {
+      return;
     }
+    throw new Error(
+      source === 'damaged'
+        ? 'this agent is file-backed but its files are missing; restore the agents directory from a backup before editing it'
+        : "this agent's files conflict with its stored configuration; resolve the conflict before editing it",
+    );
   }
 
   private async readContent(
@@ -461,9 +500,9 @@ export class OfficeService {
     if (!agent) {
       throw new Error(`agent not found: ${agentId}`);
     }
-    const fileBacked = await this.fileBacked(agentId);
+    const fileBacked = (await this.configSource(agentId)) === 'files';
     if (command.systemPrompt !== undefined) {
-      await this.requireFileBacked(agentId);
+      await this.requireWritableFiles(agentId);
     }
 
     // The registry fields stay in the database; the instructions go to the file
@@ -496,7 +535,7 @@ export class OfficeService {
     if (!(await this.repos.agents.get(agentId))) {
       throw new Error(`agent not found: ${agentId}`);
     }
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
 
     // Built through the domain factory so its rules — a non-empty name, a
     // normalised slug — still decide what a skill is; the file is where it goes.
@@ -531,7 +570,7 @@ export class OfficeService {
 
   async updateSkill(command: UpdateSkillCommand): Promise<Skill> {
     const agentId = asAgentId(command.agentId);
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
     // The id is only ever looked up under the owning agent, so one agent cannot
     // reach another's skill by guessing an id.
     const existing = await this.files.readSkill(agentId, command.skillId);
@@ -570,7 +609,7 @@ export class OfficeService {
 
   async deleteSkill(command: DeleteSkillCommand): Promise<boolean> {
     const agentId = asAgentId(command.agentId);
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
     return this.files.deleteSkill(agentId, command.skillId);
   }
 
@@ -596,7 +635,7 @@ export class OfficeService {
     if (!(await this.repos.agents.get(agentId))) {
       throw new Error(`agent not found: ${agentId}`);
     }
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
     const item = createAgentKnowledgeItem(
       {
         agentId,
@@ -621,7 +660,7 @@ export class OfficeService {
 
   async updateAgentKnowledge(command: UpdateAgentKnowledgeCommand): Promise<AgentKnowledge> {
     const agentId = asAgentId(command.agentId);
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
     const existing = await this.files.readKnowledge(agentId, command.knowledgeId);
     if (!existing) {
       throw new Error(`agent knowledge not found: ${command.knowledgeId}`);
@@ -651,7 +690,7 @@ export class OfficeService {
 
   async deleteAgentKnowledge(command: DeleteAgentKnowledgeCommand): Promise<boolean> {
     const agentId = asAgentId(command.agentId);
-    await this.requireFileBacked(agentId);
+    await this.requireWritableFiles(agentId);
     return this.files.deleteKnowledge(agentId, command.knowledgeId);
   }
 
@@ -989,12 +1028,17 @@ export interface AgentKnowledgeView {
   contentReadable: boolean;
 }
 
+/** Where an agent's configuration is read from right now. */
+export type AgentConfigSource = 'files' | 'database' | 'damaged';
+
 export interface AgentDetailView {
   agent: AgentDefinition;
   skills: Skill[];
   knowledge: AgentKnowledgeView[];
-  /** False only while a migration conflict keeps this agent on the database. */
+  /** True only when the files own this agent AND they are readable. */
   fileBacked: boolean;
+  /** Set when something needs a person: a conflict, or missing files. */
+  configIssue?: string;
 }
 
 export interface DeleteSkillCommand {
