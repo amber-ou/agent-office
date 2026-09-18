@@ -121,6 +121,7 @@ components:
         # Agent Office control plane
         - $ref: '#/components/schemas/OfficeState'
         - $ref: '#/components/schemas/OfficeError'
+        - $ref: '#/components/schemas/AgentDetail'
       discriminator: type
 
     ClientMessage:
@@ -155,6 +156,15 @@ components:
         - $ref: '#/components/schemas/AddAgentToProject'
         - $ref: '#/components/schemas/RemoveAgentFromProject'
         - $ref: '#/components/schemas/CreateTask'
+        # Agent configuration
+        - $ref: '#/components/schemas/RequestAgentDetail'
+        - $ref: '#/components/schemas/UpdateAgent'
+        - $ref: '#/components/schemas/CreateSkill'
+        - $ref: '#/components/schemas/UpdateSkill'
+        - $ref: '#/components/schemas/DeleteSkill'
+        - $ref: '#/components/schemas/CreateAgentKnowledge'
+        - $ref: '#/components/schemas/UpdateAgentKnowledge'
+        - $ref: '#/components/schemas/DeleteAgentKnowledge'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -1453,4 +1463,233 @@ components:
         description:
           type: string
         assignedAgentId:
+          type: string
+
+    # ── Agent configuration ────────────────────────────────────────
+    # Everything an Agent permanently owns: its definition, its instructions,
+    # its Skills and its AgentKnowledge. Project-scoped data never appears here.
+
+    AgentDetail:
+      description: |
+        One agent's full configuration. Sent in reply to requestAgentDetail and
+        after every change to that agent, its skills or its knowledge.
+      type: object
+      additionalProperties: false
+      required: [type, agent, skills, knowledge]
+      properties:
+        type:
+          const: agentDetail
+        agent:
+          $ref: '#/components/schemas/OfficeAgent'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeSkill'
+        knowledge:
+          description: Permanent, agent-owned knowledge. Never project knowledge.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeAgentKnowledge'
+
+    OfficeSkill:
+      type: object
+      additionalProperties: false
+      required: [id, agentId, slug, name, description, kind, requiredTools]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        kind:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+        content:
+          description: Inline skill body, when the skill's source carries one.
+          type: string
+
+    OfficeAgentKnowledge:
+      type: object
+      additionalProperties: false
+      required: [id, agentId, type, title, tags, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        content:
+          description: |
+            The stored text, read through the BlobStore. Omitted when the item
+            points at something this build cannot read inline (a file or url
+            reference), which leaves the reference itself untouched.
+          type: string
+        contentReadable:
+          type: boolean
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    RequestAgentDetail:
+      description: Ask for one agent's configuration. Omit agentId to clear the selection.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestAgentDetail
+        agentId:
+          type: string
+
+    UpdateAgent:
+      description: |
+        Edit an agent's own configuration. Only fields present are changed.
+        There is no project field: agents are global.
+      type: object
+      additionalProperties: false
+      required: [type, agentId]
+      properties:
+        type:
+          const: updateAgent
+        agentId:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        model:
+          type: string
+
+    CreateSkill:
+      description: Create a Skill owned by one agent. Slugs are unique within that agent.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, slug, name, kind]
+      properties:
+        type:
+          const: createSkill
+        agentId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+
+    UpdateSkill:
+      description: Edit a Skill. The owning agent cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, skillId]
+      properties:
+        type:
+          const: updateSkill
+        skillId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+
+    DeleteSkill:
+      type: object
+      additionalProperties: false
+      required: [type, skillId]
+      properties:
+        type:
+          const: deleteSkill
+        skillId:
+          type: string
+
+    CreateAgentKnowledge:
+      description: |
+        Add permanent knowledge to an agent. This is the ONLY way agent
+        knowledge comes into being — nothing is ingested from project work.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, title, knowledgeType, content]
+      properties:
+        type:
+          const: createAgentKnowledge
+        agentId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdateAgentKnowledge:
+      description: Edit agent knowledge. The owning agent cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: updateAgentKnowledge
+        knowledgeId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    DeleteAgentKnowledge:
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: deleteAgentKnowledge
+        knowledgeId:
           type: string

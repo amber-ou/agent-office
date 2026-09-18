@@ -40,7 +40,8 @@ export type ServerMessage =
   | WorkspaceFolders
   | AgentDiagnostics
   | OfficeState
-  | OfficeError;
+  | OfficeError
+  | AgentDetail;
 
 export type ClientMessage =
   | WebviewReady
@@ -71,7 +72,15 @@ export type ClientMessage =
   | CreateAgent
   | AddAgentToProject
   | RemoveAgentFromProject
-  | CreateTask;
+  | CreateTask
+  | RequestAgentDetail
+  | UpdateAgent
+  | CreateSkill
+  | UpdateSkill
+  | DeleteSkill
+  | CreateAgentKnowledge
+  | UpdateAgentKnowledge
+  | DeleteAgentKnowledge;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -387,6 +396,36 @@ export interface OfficeError {
   message: string;
 }
 
+export interface AgentDetail {
+  type: 'agentDetail';
+  agent: OfficeAgent;
+  skills: OfficeSkill[];
+  knowledge: OfficeAgentKnowledge[];
+}
+
+export interface OfficeSkill {
+  id: string;
+  agentId: string;
+  slug: string;
+  name: string;
+  description: string;
+  kind: string;
+  requiredTools: string[];
+  content?: string;
+}
+
+export interface OfficeAgentKnowledge {
+  id: string;
+  agentId: string;
+  type: string;
+  title: string;
+  tags: string[];
+  content?: string;
+  contentReadable?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WebviewReady {
   type: 'webviewReady';
 }
@@ -545,4 +584,69 @@ export interface CreateTask {
   title: string;
   description?: string;
   assignedAgentId?: string;
+}
+
+export interface RequestAgentDetail {
+  type: 'requestAgentDetail';
+  agentId?: string;
+}
+
+export interface UpdateAgent {
+  type: 'updateAgent';
+  agentId: string;
+  name?: string;
+  role?: string;
+  description?: string;
+  systemPrompt?: string;
+  model?: string;
+}
+
+export interface CreateSkill {
+  type: 'createSkill';
+  agentId: string;
+  slug: string;
+  name: string;
+  kind: string;
+  description?: string;
+  content?: string;
+  requiredTools?: string[];
+}
+
+export interface UpdateSkill {
+  type: 'updateSkill';
+  skillId: string;
+  slug?: string;
+  name?: string;
+  kind?: string;
+  description?: string;
+  content?: string;
+  requiredTools?: string[];
+}
+
+export interface DeleteSkill {
+  type: 'deleteSkill';
+  skillId: string;
+}
+
+export interface CreateAgentKnowledge {
+  type: 'createAgentKnowledge';
+  agentId: string;
+  title: string;
+  knowledgeType: string;
+  content: string;
+  tags?: string[];
+}
+
+export interface UpdateAgentKnowledge {
+  type: 'updateAgentKnowledge';
+  knowledgeId: string;
+  title?: string;
+  knowledgeType?: string;
+  content?: string;
+  tags?: string[];
+}
+
+export interface DeleteAgentKnowledge {
+  type: 'deleteAgentKnowledge';
+  knowledgeId: string;
 }

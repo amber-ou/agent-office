@@ -28,6 +28,20 @@ const { PixelAgentsServer } = await import('../src/server.js');
 const { AgentStateStore } = await import('../src/agentStateStore.js');
 const { closeOfficeStorage, setOfficeDataRoot } = await import('../src/control/officeStorage.js');
 
+interface AgentDetailMessage {
+  type: 'agentDetail';
+  agent: { id: string; name: string; role: string; systemPrompt: string; model?: string };
+  skills: Array<{ id: string; agentId: string; slug: string; name: string; content?: string }>;
+  knowledge: Array<{
+    id: string;
+    agentId: string;
+    title: string;
+    type: string;
+    tags: string[];
+    content?: string;
+  }>;
+}
+
 interface OfficeStateMessage {
   type: 'officeState';
   storage: { ready: boolean; schemaVersion: number; databasePath?: string; error?: string };
@@ -58,18 +72,29 @@ class OfficeClient {
     return next;
   }
 
+  /** Send a command and resolve with the agent configuration it produces. */
+  async sendForDetail(message: Record<string, unknown>): Promise<AgentDetailMessage> {
+    const next = this.next<AgentDetailMessage>('agentDetail');
+    this.socket.send(JSON.stringify(message));
+    return next;
+  }
+
   nextOfficeState(): Promise<OfficeStateMessage> {
+    return this.next<OfficeStateMessage>('officeState');
+  }
+
+  private next<T>(type: string): Promise<T> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.socket.off('message', onMessage);
-        reject(new Error('timed out waiting for officeState'));
+        reject(new Error(`timed out waiting for ${type}`));
       }, 5000);
       const onMessage = (data: Buffer | string): void => {
         const parsed = JSON.parse(data.toString()) as { type?: string };
-        if (parsed.type === 'officeState') {
+        if (parsed.type === type) {
           clearTimeout(timer);
           this.socket.off('message', onMessage);
-          resolve(parsed as OfficeStateMessage);
+          resolve(parsed as T);
         }
       };
       this.socket.on('message', onMessage);
@@ -170,6 +195,149 @@ describe('Agent Office runtime smoke test', () => {
       expect(selected.tasks.map((t) => t.title)).toEqual(['Map the onboarding flow']);
     } finally {
       reopened.close();
+    }
+  });
+
+  it('configures an agent over the wire and finds it all again after a restart', async () => {
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+
+    // A global agent, created with no project in the office at all.
+    const withAgent = await client.send({
+      type: 'createAgent',
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+    });
+    const agentId = withAgent.agents[0]!.id;
+    expect(withAgent.projects).toEqual([]);
+
+    // Open it: empty configuration to start with.
+    const opened = await client.sendForDetail({ type: 'requestAgentDetail', agentId });
+    expect(opened.skills).toEqual([]);
+    expect(opened.knowledge).toEqual([]);
+
+    // Edit the definition.
+    const configured = await client.sendForDetail({
+      type: 'updateAgent',
+      agentId,
+      name: 'UX Researcher',
+      systemPrompt: 'Always cite the transcript.',
+      model: 'claude-opus-5',
+    });
+    expect(configured.agent.name).toBe('UX Researcher');
+    expect(configured.agent.systemPrompt).toBe('Always cite the transcript.');
+
+    // Two skills, then edit one and delete the other.
+    await client.sendForDetail({
+      type: 'createSkill',
+      agentId,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+    const twoSkills = await client.sendForDetail({
+      type: 'createSkill',
+      agentId,
+      slug: 'synthesis',
+      name: 'Synthesise findings',
+      kind: 'workflow',
+    });
+    expect(twoSkills.skills).toHaveLength(2);
+    const interview = twoSkills.skills.find((s) => s.slug === 'interview')!;
+    const synthesis = twoSkills.skills.find((s) => s.slug === 'synthesis')!;
+
+    await client.sendForDetail({
+      type: 'updateSkill',
+      skillId: interview.id,
+      name: 'Run a user interview',
+      content: 'Ask open questions, then probe.',
+    });
+    const afterDelete = await client.sendForDetail({
+      type: 'deleteSkill',
+      skillId: synthesis.id,
+    });
+    expect(afterDelete.skills.map((s) => s.slug)).toEqual(['interview']);
+
+    // Knowledge, added explicitly and then edited.
+    const withKnowledge = await client.sendForDetail({
+      type: 'createAgentKnowledge',
+      agentId,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'Start with context questions.',
+      tags: ['research'],
+    });
+    expect(withKnowledge.knowledge).toHaveLength(1);
+    const knowledgeId = withKnowledge.knowledge[0]!.id;
+    await client.sendForDetail({
+      type: 'updateAgentKnowledge',
+      knowledgeId,
+      title: 'Interview guide v2',
+      content: 'Start with context, then tasks.',
+    });
+
+    // Close the office.
+    client.close();
+    server.stop();
+    closeOfficeStorage();
+
+    // Reopen: a new server, a new client, the same configuration.
+    setOfficeDataRoot(dataRoot);
+    const restarted = await startServer();
+    const reopened = await OfficeClient.connect(restarted.port, restarted.token);
+    try {
+      const detail = await reopened.sendForDetail({ type: 'requestAgentDetail', agentId });
+      expect(detail.agent.name).toBe('UX Researcher');
+      expect(detail.agent.systemPrompt).toBe('Always cite the transcript.');
+      expect(detail.agent.model).toBe('claude-opus-5');
+
+      expect(detail.skills).toHaveLength(1);
+      expect(detail.skills[0]!.name).toBe('Run a user interview');
+      expect(detail.skills[0]!.content).toBe('Ask open questions, then probe.');
+      expect(detail.skills[0]!.agentId).toBe(agentId);
+
+      expect(detail.knowledge).toHaveLength(1);
+      expect(detail.knowledge[0]!.title).toBe('Interview guide v2');
+      expect(detail.knowledge[0]!.content).toBe('Start with context, then tasks.');
+      expect(detail.knowledge[0]!.agentId).toBe(agentId);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('refuses a duplicate skill slug and leaves the agent as it was', async () => {
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+    try {
+      const withAgent = await client.send({
+        type: 'createAgent',
+        name: 'UX Agent',
+        role: 'ux',
+        provider: 'claude',
+      });
+      const agentId = withAgent.agents[0]!.id;
+      await client.sendForDetail({
+        type: 'createSkill',
+        agentId,
+        slug: 'interview',
+        name: 'Run an interview',
+        kind: 'workflow',
+      });
+
+      // The rejection still answers with the true configuration.
+      const afterDuplicate = await client.sendForDetail({
+        type: 'createSkill',
+        agentId,
+        slug: 'interview',
+        name: 'Another',
+        kind: 'workflow',
+      });
+      expect(afterDuplicate.skills).toHaveLength(1);
+      expect(afterDuplicate.skills[0]!.name).toBe('Run an interview');
+    } finally {
+      client.close();
     }
   });
 

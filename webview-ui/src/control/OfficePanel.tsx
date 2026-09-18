@@ -13,6 +13,7 @@ import { useState } from 'react';
 
 import { Button } from '../components/ui/Button.js';
 import { Modal } from '../components/ui/Modal.js';
+import { AgentConfigPanel } from './AgentConfigPanel.js';
 import type { CreateAgentFields } from './useOfficeState.js';
 import { useOfficeState } from './useOfficeState.js';
 
@@ -47,7 +48,6 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
   const activeProjectId = office.activeProjectId;
   const memberAgentIds = new Set(office.memberships.map((m) => m.agentId));
   const members = office.agents.filter((a) => memberAgentIds.has(a.id));
-  const nonMembers = office.agents.filter((a) => !memberAgentIds.has(a.id));
 
   const submitProject = () => {
     const name = projectName.trim();
@@ -173,21 +173,28 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
             <p className={emptyClass}>No agents yet.</p>
           ) : (
             <ul>
-              {nonMembers.map((a) => (
+              {office.agents.map((a) => (
                 <li key={a.id} className={rowClass}>
                   <span className="truncate">
                     {a.name} <span className="text-text-muted text-sm">· {a.role}</span>
                   </span>
-                  <Button
-                    size="sm"
-                    variant={activeProjectId ? 'default' : 'disabled'}
-                    disabled={!activeProjectId}
-                    onClick={() =>
-                      activeProjectId && office.addAgentToProject(activeProjectId, a.id)
-                    }
-                  >
-                    Add to project
-                  </Button>
+                  <span className="flex gap-4 shrink-0">
+                    <Button size="sm" onClick={() => office.openAgent(a.id)}>
+                      Configure
+                    </Button>
+                    {!memberAgentIds.has(a.id) && (
+                      <Button
+                        size="sm"
+                        variant={activeProjectId ? 'default' : 'disabled'}
+                        disabled={!activeProjectId}
+                        onClick={() =>
+                          activeProjectId && office.addAgentToProject(activeProjectId, a.id)
+                        }
+                      >
+                        Add to project
+                      </Button>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -256,6 +263,15 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
           )}
         </section>
       </div>
+      {office.agentDetail && (
+        <AgentConfigPanel
+          // Remount on a different agent so the draft forms reseed from it.
+          key={office.agentDetail.agent.id}
+          detail={office.agentDetail}
+          commands={office}
+          error={office.error}
+        />
+      )}
     </Modal>
   );
 }

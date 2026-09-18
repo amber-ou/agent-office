@@ -13,15 +13,24 @@
  * you are looking at is a property of the window, not of the office.
  */
 
-import type { ClientMessage, OfficeState, ServerMessage } from '../../../core/src/messages.js';
+import type {
+  AgentDetail,
+  ClientMessage,
+  OfficeState,
+  ServerMessage,
+} from '../../../core/src/messages.js';
 import type {
   AgentDefinition,
+  KnowledgeType,
   Project,
   ProjectAgent,
   ProjectId,
+  Skill,
+  SkillKind,
   Task,
 } from '../../../domain/src/index.js';
 import { asProjectId } from '../../../domain/src/index.js';
+import type { AgentKnowledgeView } from './officeService.js';
 import { OfficeService } from './officeService.js';
 import { getOfficeStorage, officeStorageStatus } from './officeStorage.js';
 
@@ -34,6 +43,14 @@ const OFFICE_CLIENT_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'addAgentToProject',
   'removeAgentFromProject',
   'createTask',
+  'requestAgentDetail',
+  'updateAgent',
+  'createSkill',
+  'updateSkill',
+  'deleteSkill',
+  'createAgentKnowledge',
+  'updateAgentKnowledge',
+  'deleteAgentKnowledge',
 ]);
 
 export function isOfficeClientMessage(type: unknown): boolean {
@@ -54,6 +71,8 @@ function asWire(message: ServerMessage): Record<string, unknown> {
  */
 export class OfficeSession {
   private activeProjectId: ProjectId | undefined;
+  /** Which agent's configuration this window has open. Per-connection UI state. */
+  private selectedAgentId: string | undefined;
 
   async handle(message: ClientMessage, send: Send): Promise<void> {
     const storage = getOfficeStorage();
@@ -120,6 +139,93 @@ export class OfficeSession {
           });
           break;
 
+        // ── Agent configuration ──
+        // These change one agent and never the office listing, so they answer
+        // with the agent detail rather than a fresh office snapshot.
+
+        case 'requestAgentDetail':
+          this.selectedAgentId = message.agentId;
+          await this.sendAgentDetail(service, send);
+          return;
+
+        case 'updateAgent': {
+          const agent = await service.updateAgent({
+            agentId: message.agentId,
+            name: message.name,
+            role: message.role,
+            description: message.description,
+            systemPrompt: message.systemPrompt,
+            model: message.model,
+          });
+          this.selectedAgentId = agent.id;
+          await this.sendAgentDetail(service, send);
+          // The library shows names and roles, so it needs the new snapshot too.
+          send(asWire(await this.buildState(service)));
+          return;
+        }
+
+        case 'createSkill': {
+          await service.createSkill({
+            agentId: message.agentId,
+            slug: message.slug,
+            name: message.name,
+            kind: message.kind as SkillKind,
+            description: message.description,
+            content: message.content,
+            requiredTools: message.requiredTools,
+          });
+          this.selectedAgentId = message.agentId;
+          await this.sendAgentDetail(service, send);
+          return;
+        }
+
+        case 'updateSkill':
+          await service.updateSkill({
+            skillId: message.skillId,
+            slug: message.slug,
+            name: message.name,
+            kind: message.kind as SkillKind | undefined,
+            description: message.description,
+            content: message.content,
+            requiredTools: message.requiredTools,
+          });
+          await this.sendAgentDetail(service, send);
+          return;
+
+        case 'deleteSkill':
+          await service.deleteSkill(message.skillId);
+          await this.sendAgentDetail(service, send);
+          return;
+
+        case 'createAgentKnowledge': {
+          await service.createAgentKnowledge({
+            agentId: message.agentId,
+            title: message.title,
+            knowledgeType: message.knowledgeType as KnowledgeType,
+            content: message.content,
+            tags: message.tags,
+          });
+          this.selectedAgentId = message.agentId;
+          await this.sendAgentDetail(service, send);
+          return;
+        }
+
+        case 'updateAgentKnowledge':
+          await service.updateAgentKnowledge({
+            knowledgeId: message.knowledgeId,
+            title: message.title,
+            knowledgeType: message.knowledgeType as KnowledgeType | undefined,
+            content: message.content,
+            tags: message.tags,
+          });
+          await this.sendAgentDetail(service, send);
+          return;
+
+        case 'deleteAgentKnowledge':
+          await service.deleteAgentKnowledge(message.knowledgeId);
+          await this.sendAgentDetail(service, send);
+          return;
+
         default:
           return;
       }
@@ -131,8 +237,12 @@ export class OfficeSession {
           message: error instanceof Error ? error.message : String(error),
         }),
       );
-      // Still send the snapshot: the UI should show the true state after a
-      // rejected operation, not whatever it optimistically assumed.
+      // Still send the true state after a rejected operation, so the UI never
+      // keeps whatever it optimistically assumed.
+      if (isAgentConfigMessage(message.type)) {
+        await this.sendAgentDetail(service, send);
+        return;
+      }
     }
 
     send(asWire(await this.buildState(service)));
@@ -145,6 +255,26 @@ export class OfficeSession {
       return asWire(emptyOfficeState());
     }
     return asWire(await this.buildState(new OfficeService(storage)));
+  }
+
+  /** Push the selected agent's configuration, if one is selected and still exists. */
+  private async sendAgentDetail(service: OfficeService, send: Send): Promise<void> {
+    if (!this.selectedAgentId) {
+      return;
+    }
+    const detail = await service.agentDetail(this.selectedAgentId);
+    if (!detail) {
+      this.selectedAgentId = undefined;
+      return;
+    }
+    send(
+      asWire({
+        type: 'agentDetail',
+        agent: toOfficeAgent(detail.agent),
+        skills: detail.skills.map(toOfficeSkill),
+        knowledge: detail.knowledge.map(toOfficeAgentKnowledge),
+      }),
+    );
   }
 
   private async buildState(service: OfficeService): Promise<OfficeState> {
@@ -223,5 +353,52 @@ function toOfficeTask(task: Task): OfficeState['tasks'][number] {
     ...(task.assignedAgentId ? { assignedAgentId: task.assignedAgentId } : {}),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
+  };
+}
+
+/** Agent-configuration messages answer with agentDetail, not an office snapshot. */
+const AGENT_CONFIG_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  'requestAgentDetail',
+  'updateAgent',
+  'createSkill',
+  'updateSkill',
+  'deleteSkill',
+  'createAgentKnowledge',
+  'updateAgentKnowledge',
+  'deleteAgentKnowledge',
+]);
+
+function isAgentConfigMessage(type: string): boolean {
+  return AGENT_CONFIG_MESSAGE_TYPES.has(type);
+}
+
+function toOfficeSkill(skill: Skill): AgentDetail['skills'][number] {
+  return {
+    id: skill.id,
+    agentId: skill.agentId,
+    slug: skill.slug,
+    name: skill.name,
+    description: skill.description,
+    kind: skill.kind,
+    requiredTools: skill.requiredTools,
+    // Only an inline `content` source has a body to edit; an MCP or integration
+    // source is configuration, not text, so it carries none.
+    ...(skill.source.origin === 'content' && skill.source.ref.store === 'inline'
+      ? { content: skill.source.ref.content }
+      : {}),
+  };
+}
+
+function toOfficeAgentKnowledge(view: AgentKnowledgeView): AgentDetail['knowledge'][number] {
+  return {
+    id: view.item.id,
+    agentId: view.item.agentId,
+    type: view.item.type,
+    title: view.item.title,
+    tags: view.item.tags,
+    contentReadable: view.contentReadable,
+    ...(view.content === undefined ? {} : { content: view.content }),
+    createdAt: view.item.createdAt,
+    updatedAt: view.item.updatedAt,
   };
 }

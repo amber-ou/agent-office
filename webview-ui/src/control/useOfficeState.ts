@@ -10,14 +10,24 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type {
+  AgentDetail,
   OfficeAgent,
+  OfficeAgentKnowledge,
   OfficeMembership,
   OfficeProject,
+  OfficeSkill,
   OfficeState,
   OfficeStorageStatus,
   OfficeTask,
 } from '../../../core/src/messages.js';
 import { transport } from '../transport/index.js';
+
+/** The configuration of the one agent this window has open, if any. */
+export interface AgentDetailView {
+  agent: OfficeAgent;
+  skills: OfficeSkill[];
+  knowledge: OfficeAgentKnowledge[];
+}
 
 export interface OfficeView {
   storage: OfficeStorageStatus;
@@ -26,6 +36,8 @@ export interface OfficeView {
   memberships: OfficeMembership[];
   tasks: OfficeTask[];
   activeProjectId?: string;
+  /** The open agent's configuration, or null when none is open. */
+  agentDetail: AgentDetailView | null;
   /** Last failed operation, cleared by the next successful snapshot. */
   error: string | null;
 }
@@ -36,6 +48,7 @@ const EMPTY: OfficeView = {
   agents: [],
   memberships: [],
   tasks: [],
+  agentDetail: null,
   error: null,
 };
 
@@ -48,6 +61,30 @@ export interface CreateAgentFields {
   model?: string;
 }
 
+export interface UpdateAgentFields {
+  name?: string;
+  role?: string;
+  description?: string;
+  systemPrompt?: string;
+  model?: string;
+}
+
+export interface SkillFields {
+  slug: string;
+  name: string;
+  kind: string;
+  description?: string;
+  content?: string;
+  requiredTools?: string[];
+}
+
+export interface KnowledgeFields {
+  title: string;
+  knowledgeType: string;
+  content: string;
+  tags?: string[];
+}
+
 export interface OfficeCommands {
   refresh(): void;
   createProject(name: string, description?: string): void;
@@ -56,6 +93,15 @@ export interface OfficeCommands {
   addAgentToProject(projectId: string, agentId: string): void;
   removeAgentFromProject(projectId: string, agentId: string): void;
   createTask(projectId: string, title: string, description?: string): void;
+  openAgent(agentId: string): void;
+  closeAgent(): void;
+  updateAgent(agentId: string, fields: UpdateAgentFields): void;
+  createSkill(agentId: string, fields: SkillFields): void;
+  updateSkill(skillId: string, fields: Partial<SkillFields>): void;
+  deleteSkill(skillId: string): void;
+  createKnowledge(agentId: string, fields: KnowledgeFields): void;
+  updateKnowledge(knowledgeId: string, fields: Partial<KnowledgeFields>): void;
+  deleteKnowledge(knowledgeId: string): void;
 }
 
 export function useOfficeState(): OfficeView & OfficeCommands {
@@ -65,7 +111,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     const unsubscribe = transport.onMessage((message) => {
       if (message.type === 'officeState') {
         const state = message as OfficeState;
-        setView({
+        setView((current) => ({
           storage: state.storage,
           projects: state.projects,
           agents: state.agents,
@@ -74,9 +120,23 @@ export function useOfficeState(): OfficeView & OfficeCommands {
           ...(state.activeProjectId === undefined
             ? {}
             : { activeProjectId: state.activeProjectId }),
+          // The office snapshot says nothing about the open agent, so the
+          // configuration surface keeps whatever the last agentDetail put there.
+          agentDetail: current.agentDetail,
           // A fresh snapshot is the truth; any earlier failure is now history.
           error: null,
-        });
+        }));
+      } else if (message.type === 'agentDetail') {
+        const detail = message as AgentDetail;
+        setView((current) => ({
+          ...current,
+          agentDetail: {
+            agent: detail.agent,
+            skills: detail.skills,
+            knowledge: detail.knowledge,
+          },
+          error: null,
+        }));
       } else if (message.type === 'officeError') {
         const failure = `${message.operation}: ${message.message}`;
         setView((current) => ({ ...current, error: failure }));
@@ -133,6 +193,84 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     });
   }, []);
 
+  const openAgent = useCallback((agentId: string) => {
+    transport.send({ type: 'requestAgentDetail', agentId });
+  }, []);
+
+  // Closing is local: the server keeps no per-window selection worth clearing
+  // beyond what the next open replaces.
+  const closeAgent = useCallback(() => {
+    setView((current) => ({ ...current, agentDetail: null }));
+  }, []);
+
+  const updateAgent = useCallback((agentId: string, fields: UpdateAgentFields) => {
+    transport.send({
+      type: 'updateAgent',
+      agentId,
+      ...optional('name', fields.name),
+      ...optional('role', fields.role),
+      ...optional('description', fields.description),
+      ...optional('systemPrompt', fields.systemPrompt),
+      ...optional('model', fields.model),
+    });
+  }, []);
+
+  const createSkill = useCallback((agentId: string, fields: SkillFields) => {
+    transport.send({
+      type: 'createSkill',
+      agentId,
+      slug: fields.slug,
+      name: fields.name,
+      kind: fields.kind,
+      ...optional('description', fields.description),
+      ...optional('content', fields.content),
+      ...optional('requiredTools', fields.requiredTools),
+    });
+  }, []);
+
+  const updateSkill = useCallback((skillId: string, fields: Partial<SkillFields>) => {
+    transport.send({
+      type: 'updateSkill',
+      skillId,
+      ...optional('slug', fields.slug),
+      ...optional('name', fields.name),
+      ...optional('kind', fields.kind),
+      ...optional('description', fields.description),
+      ...optional('content', fields.content),
+      ...optional('requiredTools', fields.requiredTools),
+    });
+  }, []);
+
+  const deleteSkill = useCallback((skillId: string) => {
+    transport.send({ type: 'deleteSkill', skillId });
+  }, []);
+
+  const createKnowledge = useCallback((agentId: string, fields: KnowledgeFields) => {
+    transport.send({
+      type: 'createAgentKnowledge',
+      agentId,
+      title: fields.title,
+      knowledgeType: fields.knowledgeType,
+      content: fields.content,
+      ...optional('tags', fields.tags),
+    });
+  }, []);
+
+  const updateKnowledge = useCallback((knowledgeId: string, fields: Partial<KnowledgeFields>) => {
+    transport.send({
+      type: 'updateAgentKnowledge',
+      knowledgeId,
+      ...optional('title', fields.title),
+      ...optional('knowledgeType', fields.knowledgeType),
+      ...optional('content', fields.content),
+      ...optional('tags', fields.tags),
+    });
+  }, []);
+
+  const deleteKnowledge = useCallback((knowledgeId: string) => {
+    transport.send({ type: 'deleteAgentKnowledge', knowledgeId });
+  }, []);
+
   return {
     ...view,
     refresh,
@@ -142,5 +280,24 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     addAgentToProject,
     removeAgentFromProject,
     createTask,
+    openAgent,
+    closeAgent,
+    updateAgent,
+    createSkill,
+    updateSkill,
+    deleteSkill,
+    createKnowledge,
+    updateKnowledge,
+    deleteKnowledge,
   };
+}
+
+/**
+ * One optional field, or nothing.
+ *
+ * Every message sets `additionalProperties: false` and treats a missing field
+ * as "leave this alone", so an explicit `undefined` must never reach the wire.
+ */
+function optional<K extends string, V>(key: K, value: V | undefined): Record<K, V> | object {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 }
