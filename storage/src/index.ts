@@ -13,6 +13,16 @@
  * decision belonging to this layer; nothing in `domain/` knows it exists.
  */
 
+export type {
+  AgentFileStore,
+  KnowledgeFileInput,
+  SkillFileInput,
+  StoredKnowledge,
+  StoredSkill,
+} from './agentFiles.js';
+export { AGENTS_DIR_NAME, FileAgentStore } from './files/fileAgentStore.js';
+export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
+export { migrateAgentFiles } from './files/migrateAgentFiles.js';
 export { clone, InMemoryRepository } from './memory/inMemoryRepository.js';
 export type { InMemoryRepositories, InMemoryStorage } from './memory/repositories.js';
 export {

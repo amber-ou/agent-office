@@ -35,6 +35,8 @@ export interface AgentDetailView {
   agent: OfficeAgent;
   skills: OfficeSkill[];
   knowledge: OfficeAgentKnowledge[];
+  /** False while a migration conflict keeps this agent read-only. */
+  fileBacked: boolean;
 }
 
 /** The workspace of the one project this window has open, if any. */
@@ -177,11 +179,11 @@ export interface OfficeCommands {
   closeAgent(): void;
   updateAgent(agentId: string, fields: UpdateAgentFields): void;
   createSkill(agentId: string, fields: SkillFields): void;
-  updateSkill(skillId: string, fields: Partial<SkillFields>): void;
-  deleteSkill(skillId: string): void;
+  updateSkill(agentId: string, skillId: string, fields: Partial<SkillFields>): void;
+  deleteSkill(agentId: string, skillId: string): void;
   createKnowledge(agentId: string, fields: KnowledgeFields): void;
-  updateKnowledge(knowledgeId: string, fields: Partial<KnowledgeFields>): void;
-  deleteKnowledge(knowledgeId: string): void;
+  updateKnowledge(agentId: string, knowledgeId: string, fields: Partial<KnowledgeFields>): void;
+  deleteKnowledge(agentId: string, knowledgeId: string): void;
 }
 
 export function useOfficeState(): OfficeView & OfficeCommands {
@@ -216,6 +218,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
             agent: detail.agent,
             skills: detail.skills,
             knowledge: detail.knowledge,
+            fileBacked: detail.fileBacked !== false,
           },
           error: null,
         }));
@@ -440,21 +443,25 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     });
   }, []);
 
-  const updateSkill = useCallback((skillId: string, fields: Partial<SkillFields>) => {
-    transport.send({
-      type: 'updateSkill',
-      skillId,
-      ...optional('slug', fields.slug),
-      ...optional('name', fields.name),
-      ...optional('kind', fields.kind),
-      ...optional('description', fields.description),
-      ...optional('content', fields.content),
-      ...optional('requiredTools', fields.requiredTools),
-    });
-  }, []);
+  const updateSkill = useCallback(
+    (agentId: string, skillId: string, fields: Partial<SkillFields>) => {
+      transport.send({
+        type: 'updateSkill',
+        agentId,
+        skillId,
+        ...optional('slug', fields.slug),
+        ...optional('name', fields.name),
+        ...optional('kind', fields.kind),
+        ...optional('description', fields.description),
+        ...optional('content', fields.content),
+        ...optional('requiredTools', fields.requiredTools),
+      });
+    },
+    [],
+  );
 
-  const deleteSkill = useCallback((skillId: string) => {
-    transport.send({ type: 'deleteSkill', skillId });
+  const deleteSkill = useCallback((agentId: string, skillId: string) => {
+    transport.send({ type: 'deleteSkill', agentId, skillId });
   }, []);
 
   const createKnowledge = useCallback((agentId: string, fields: KnowledgeFields) => {
@@ -468,19 +475,23 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     });
   }, []);
 
-  const updateKnowledge = useCallback((knowledgeId: string, fields: Partial<KnowledgeFields>) => {
-    transport.send({
-      type: 'updateAgentKnowledge',
-      knowledgeId,
-      ...optional('title', fields.title),
-      ...optional('knowledgeType', fields.knowledgeType),
-      ...optional('content', fields.content),
-      ...optional('tags', fields.tags),
-    });
-  }, []);
+  const updateKnowledge = useCallback(
+    (agentId: string, knowledgeId: string, fields: Partial<KnowledgeFields>) => {
+      transport.send({
+        type: 'updateAgentKnowledge',
+        agentId,
+        knowledgeId,
+        ...optional('title', fields.title),
+        ...optional('knowledgeType', fields.knowledgeType),
+        ...optional('content', fields.content),
+        ...optional('tags', fields.tags),
+      });
+    },
+    [],
+  );
 
-  const deleteKnowledge = useCallback((knowledgeId: string) => {
-    transport.send({ type: 'deleteAgentKnowledge', knowledgeId });
+  const deleteKnowledge = useCallback((agentId: string, knowledgeId: string) => {
+    transport.send({ type: 'deleteAgentKnowledge', agentId, knowledgeId });
   }, []);
 
   return {

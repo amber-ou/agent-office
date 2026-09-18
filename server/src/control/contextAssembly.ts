@@ -28,6 +28,7 @@ import type {
   Task,
 } from '../../../domain/src/index.js';
 import { defaultContextBudget } from '../../../domain/src/index.js';
+import type { AgentFileStore } from '../../../storage/src/index.js';
 
 /** What every agent is told, regardless of who it is or what it is doing. */
 export const GLOBAL_INSTRUCTIONS = [
@@ -75,17 +76,30 @@ export interface AssembledContext {
   contents: Map<string, string>;
 }
 
+/** What assembly reads from. Repositories, plus the agent's own files. */
+export interface ContextSources {
+  repos: Repositories;
+  agentFiles: AgentFileStore;
+}
+
 /**
  * Build the bundle for one task, and resolve the content the prompt needs.
  *
  * Reads only: the assigned agent, its skills, its knowledge, the task's project,
- * that project's knowledge, and the task. Never another project's anything.
+ * that project's knowledge, and the task. Never another project's anything, and
+ * never another agent's files — every file read is scoped to the assigned
+ * agent's own directory.
+ *
+ * The agent's instructions, skills and foundational knowledge come from ITS
+ * FILES once it is file-backed; an agent still blocked on a migration conflict
+ * is read from the database, so a conflict degrades the source, not the run.
  */
 export async function assembleContext(
-  repos: Repositories,
+  sources: ContextSources,
   task: Task,
   budget: ContextBudget = defaultContextBudget(),
 ): Promise<AssembledContext> {
+  const { repos, agentFiles } = sources;
   if (task.assignedAgentId === undefined) {
     throw new Error('task has no assigned agent');
   }
@@ -100,25 +114,56 @@ export async function assembleContext(
     throw new Error(`project not found: ${task.projectId}`);
   }
 
-  const [skills, agentCandidates, projectCandidates] = await Promise.all([
-    repos.skills.listByAgent(agent.id),
-    repos.agentKnowledge.listByAgent(agent.id),
-    repos.projectKnowledge.listByProject(project.id),
-  ]);
+  const fileBacked = await agentFiles.isMigrated(agent.id);
+  const contents = new Map<string, string>();
 
-  const request: AgentContextRequest = { agent, skills, project, task, budget };
+  const [storedSkills, storedKnowledge] = fileBacked
+    ? await Promise.all([agentFiles.listSkills(agent.id), agentFiles.listKnowledge(agent.id)])
+    : [[], []];
+  const skills = fileBacked
+    ? storedSkills.map((s) => s.skill)
+    : await repos.skills.listByAgent(agent.id);
+  const agentCandidates = fileBacked
+    ? storedKnowledge.map((k) => k.item)
+    : await repos.agentKnowledge.listByAgent(agent.id);
+  const projectCandidates = await repos.projectKnowledge.listByProject(project.id);
+
+  // File-backed content is already in hand; nothing re-reads it.
+  for (const stored of storedSkills) {
+    contents.set(stored.skill.id, stored.content);
+  }
+  for (const stored of storedKnowledge) {
+    contents.set(stored.item.id, stored.content);
+  }
+
+  const instructions = fileBacked ? await agentFiles.readInstructions(agent.id) : null;
+  const effectiveAgent = instructions === null ? agent : { ...agent, systemPrompt: instructions };
+
+  const request: AgentContextRequest = {
+    agent: effectiveAgent,
+    skills,
+    project,
+    task,
+    budget,
+  };
   const [agentKnowledge, projectKnowledge] = await Promise.all([
     explicitKnowledgeSelector.selectAgentKnowledge(request, agentCandidates),
     explicitKnowledgeSelector.selectProjectKnowledge(request, projectCandidates),
   ]);
 
-  const contents = new Map<string, string>();
   for (const skill of skills) {
-    if (skill.source.origin === 'content' && skill.source.ref.store === 'inline') {
+    if (
+      !contents.has(skill.id) &&
+      skill.source.origin === 'content' &&
+      skill.source.ref.store === 'inline'
+    ) {
       contents.set(skill.id, skill.source.ref.content);
     }
   }
   for (const item of [...agentKnowledge, ...projectKnowledge]) {
+    if (contents.has(item.id)) {
+      continue;
+    }
     try {
       contents.set(item.id, await repos.blobs.read(item.location));
     } catch {
@@ -130,7 +175,7 @@ export async function assembleContext(
   return {
     bundle: {
       globalInstructions: GLOBAL_INSTRUCTIONS,
-      agent,
+      agent: effectiveAgent,
       skills,
       agentKnowledge,
       project,

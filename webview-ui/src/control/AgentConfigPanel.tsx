@@ -139,7 +139,7 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
       requiredTools: skill.requiredTools,
     };
     if (editingSkillId) {
-      commands.updateSkill(editingSkillId, fields);
+      commands.updateSkill(agent.id, editingSkillId, fields);
     } else {
       commands.createSkill(agent.id, fields);
     }
@@ -159,7 +159,7 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
       tags: knowledge.tags,
     };
     if (editingKnowledgeId) {
-      commands.updateKnowledge(editingKnowledgeId, fields);
+      commands.updateKnowledge(agent.id, editingKnowledgeId, fields);
     } else {
       commands.createKnowledge(agent.id, fields);
     }
@@ -179,6 +179,12 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
         className="flex flex-col gap-8 max-h-[70vh] overflow-y-auto"
         data-testid="agent-config-panel"
       >
+        {!detail.fileBacked && (
+          <div className="border-2 border-warning p-6 text-warning text-sm">
+            This agent&apos;s files disagree with its stored configuration, so editing is refused
+            until that is resolved. Both copies have been kept.
+          </div>
+        )}
         {error && <div className="border-2 border-warning p-6 text-warning text-sm">{error}</div>}
 
         {/* ── Definition ───────────────────────────────────────── */}
@@ -319,7 +325,7 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
                     >
                       Edit
                     </Button>
-                    <Button size="sm" onClick={() => commands.deleteSkill(item.id)}>
+                    <Button size="sm" onClick={() => commands.deleteSkill(agent.id, item.id)}>
                       Delete
                     </Button>
                   </span>
@@ -411,7 +417,7 @@ export function AgentConfigPanel({ detail, commands, error }: AgentConfigPanelPr
                     >
                       Edit
                     </Button>
-                    <Button size="sm" onClick={() => commands.deleteKnowledge(item.id)}>
+                    <Button size="sm" onClick={() => commands.deleteKnowledge(agent.id, item.id)}>
                       Delete
                     </Button>
                   </span>

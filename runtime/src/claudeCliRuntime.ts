@@ -59,6 +59,12 @@ export interface ClaudeStartRunRequest extends StartRunRequest {
   resume?: string;
   /** Send this text instead of rendering the bundle. Used by a revision. */
   prompt?: string;
+  /**
+   * Directories this run may not read or write through Claude's file tools.
+   * Per-run rather than per-runtime, so the caller that knows where the agent
+   * files live decides, whoever constructed the runtime.
+   */
+  denyPaths?: readonly string[];
 }
 
 export interface ClaudeRunOutcome {
@@ -73,6 +79,15 @@ export interface ClaudeRunOutcome {
 }
 
 export interface ClaudeCliRuntimeOptions {
+  /**
+   * Directories a run must not read or write through Claude's file tools —
+   * the Agent Office data root, above all. Passed to `claude --settings` as
+   * deny rules, which the CLI enforces itself.
+   *
+   * Absolute paths take Claude's `//` prefix inside a rule; that is done here
+   * so callers pass ordinary paths.
+   */
+  denyPaths?: readonly string[];
   /** Executable name or path. Default `claude`. */
   command?: string;
   spawn?: SpawnLike;
@@ -116,6 +131,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
   private readonly timeoutMs: number;
   private readonly contentsFor: (request: StartRunRequest) => Promise<ContentsById>;
   private readonly budget: ContextBudget;
+  private readonly denyPaths: readonly string[];
   private readonly live = new Map<SessionId, LiveRun>();
   private readonly listeners = new Set<(outcome: ClaudeRunOutcome) => void>();
 
@@ -126,6 +142,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.contentsFor = options.contentsFor ?? (async () => new Map());
     this.budget = options.budget ?? defaultContextBudget();
+    this.denyPaths = options.denyPaths ?? [];
   }
 
   /** Subscribe to run outcomes. Returns the unsubscribe. */
@@ -152,6 +169,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
       // both would be asking for two different sessions at once.
       ...(request.resume ? ['--resume', request.resume] : ['--session-id', request.sessionId]),
       ...(request.agent.model ? ['--model', request.agent.model] : []),
+      ...denySettingsArgs(request.denyPaths ?? this.denyPaths),
       ...this.extraArgs,
     ];
 
@@ -247,6 +265,33 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
       listener(outcome);
     }
   }
+}
+
+/**
+ * Deny rules for the paths a run has no business touching.
+ *
+ * Claude Code enforces these for its own file tools (Read, Write, Edit and the
+ * notebook variants) — proven against the real CLI, not assumed. `Bash` is NOT
+ * covered: a shell command runs as the same user and can reach any path this
+ * process can, so this narrows the blast radius rather than sealing it. See
+ * ADR 007.
+ */
+function denySettingsArgs(denyPaths: readonly string[]): string[] {
+  if (denyPaths.length === 0) {
+    return [];
+  }
+  const deny = denyPaths.flatMap((dir) => {
+    // A rule's absolute path is written with a leading `//` in Claude's
+    // permission syntax; a single slash silently matches nothing.
+    const pattern = `//${dir.replace(/^\/+/, '')}/**`;
+    return [
+      `Read(${pattern})`,
+      `Write(${pattern})`,
+      `Edit(${pattern})`,
+      `NotebookEdit(${pattern})`,
+    ];
+  });
+  return ['--settings', JSON.stringify({ permissions: { deny } })];
 }
 
 /** Claude's JSON result envelope, as far as this bridge reads it. */

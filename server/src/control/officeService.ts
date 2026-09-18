@@ -36,7 +36,6 @@ import type {
 } from '../../../domain/src/index.js';
 import {
   asAgentId,
-  asAgentKnowledgeId,
   asOutputId,
   asProjectId,
   asProjectKnowledgeId,
@@ -44,7 +43,6 @@ import {
   assertNotAlreadyMember,
   assertParentValid,
   assignTask as assignTaskToAgent,
-  asSkillId,
   asTaskId,
   createAgentDefinition,
   createAgentKnowledge as createAgentKnowledgeItem,
@@ -63,8 +61,9 @@ import {
   updateSkill as updateSkillDefinition,
   uuidIdGenerator,
 } from '../../../domain/src/index.js';
-import type { ReviewNote } from '../../../storage/src/index.js';
+import type { AgentFileStore, ReviewNote } from '../../../storage/src/index.js';
 import type { OfficeStorage } from './officeStorage.js';
+import { awaitAgentFileMigration } from './officeStorage.js';
 
 const DEFAULT_DEPS: DomainDeps = { ids: uuidIdGenerator, clock: systemClock };
 
@@ -184,6 +183,11 @@ export class OfficeService {
     return this.storage.repos;
   }
 
+  /** Agent-owned files: the authoritative source for agent configuration. */
+  private get files(): AgentFileStore {
+    return this.storage.agentFiles;
+  }
+
   // ── Queries ────────────────────────────────────────────────────
 
   /**
@@ -238,6 +242,13 @@ export class OfficeService {
       this.deps,
     );
     await this.repos.agents.put(agent);
+    // A new agent owns its files from the start: the directory exists, its
+    // instructions are on disk, and it is authoritative immediately — there is
+    // no legacy copy for it to conflict with.
+    const now = this.deps.clock.now();
+    await this.files.ensureAgent(agent.id, now);
+    await this.files.writeInstructions(agent.id, agent.systemPrompt);
+    await this.files.markMigrated(agent.id, now);
     return agent;
   }
 
@@ -349,28 +360,87 @@ export class OfficeService {
   /**
    * One agent with its own skills and knowledge.
    *
-   * Knowledge content is resolved through the BlobStore. A reference this build
-   * cannot read inline (a `file` or `url` location) comes back without content
-   * and flagged unreadable, rather than failing the whole read — the reference
-   * itself stays exactly as stored.
+   * Once an agent has been migrated, its instructions, skills and foundational
+   * knowledge come from ITS OWN files — the database keeps the registry entry
+   * (name, role, provider, model) and nothing editable that the files also
+   * hold. An agent whose migration hit a conflict still reads from the
+   * database, and says so, until a person resolves it.
    */
   async agentDetail(agentIdRaw: string): Promise<AgentDetailView | null> {
     const agentId = asAgentId(agentIdRaw);
-    const agent = await this.repos.agents.get(agentId);
-    if (!agent) {
+    const stored = await this.repos.agents.get(agentId);
+    if (!stored) {
       return null;
     }
+    if (!(await this.fileBacked(agentId))) {
+      return this.legacyAgentDetail(stored);
+    }
+
+    const agent = await this.hydrate(stored);
     const [skills, knowledge] = await Promise.all([
-      this.repos.skills.listByAgent(agentId),
-      this.repos.agentKnowledge.listByAgent(agentId),
+      this.files.listSkills(agentId),
+      this.files.listKnowledge(agentId),
+    ]);
+    return {
+      agent,
+      skills: skills.map((s) => s.skill),
+      knowledge: knowledge.map((k) => ({
+        item: k.item,
+        content: k.content,
+        contentReadable: true,
+      })),
+      fileBacked: true,
+    };
+  }
+
+  /** The pre-M5 read path. Used only for an agent whose migration is blocked. */
+  private async legacyAgentDetail(agent: AgentDefinition): Promise<AgentDetailView> {
+    const [skills, knowledge] = await Promise.all([
+      this.repos.skills.listByAgent(agent.id),
+      this.repos.agentKnowledge.listByAgent(agent.id),
     ]);
     const resolved = await Promise.all(
-      knowledge.map(async (item) => ({
-        item,
-        ...(await this.readContent(item.location)),
-      })),
+      knowledge.map(async (item) => ({ item, ...(await this.readContent(item.location)) })),
     );
-    return { agent, skills, knowledge: resolved };
+    return { agent, skills, knowledge: resolved, fileBacked: false };
+  }
+
+  /**
+   * The registry row plus whatever the files own.
+   *
+   * `systemPrompt` lives in `instructions.md` once an agent is file-backed, so
+   * the row's copy — left untouched for recovery — is never what is read.
+   */
+  private async hydrate(agent: AgentDefinition): Promise<AgentDefinition> {
+    const instructions = await this.files.readInstructions(agent.id);
+    return instructions === null ? agent : { ...agent, systemPrompt: instructions };
+  }
+
+  /**
+   * True when this agent's files are the authoritative source.
+   *
+   * Waits for the open database's migration first: an agent that is only
+   * halfway through moving to files is not one anybody should be reading from,
+   * or refusing writes for.
+   */
+  private async fileBacked(agentId: AgentId): Promise<boolean> {
+    await awaitAgentFileMigration();
+    return this.files.isMigrated(agentId);
+  }
+
+  /**
+   * Refuse to write agent configuration that files do not yet own.
+   *
+   * An agent is only ever not file-backed because its migration reported a
+   * conflict. Writing then would mean editing one of two disagreeing copies,
+   * which is exactly what this phase exists to stop.
+   */
+  private async requireFileBacked(agentId: AgentId): Promise<void> {
+    if (!(await this.fileBacked(agentId))) {
+      throw new Error(
+        "this agent's files conflict with its stored configuration; resolve the conflict before editing it",
+      );
+    }
   }
 
   private async readContent(
@@ -391,19 +461,32 @@ export class OfficeService {
     if (!agent) {
       throw new Error(`agent not found: ${agentId}`);
     }
+    const fileBacked = await this.fileBacked(agentId);
+    if (command.systemPrompt !== undefined) {
+      await this.requireFileBacked(agentId);
+    }
+
+    // The registry fields stay in the database; the instructions go to the file
+    // that owns them. Renaming an agent touches no path: its directory is its
+    // id (ADR 007).
     const updated = updateAgentDefinition(
       agent,
       {
         ...(command.name === undefined ? {} : { name: command.name }),
         ...(command.role === undefined ? {} : { role: command.role }),
         ...(command.description === undefined ? {} : { description: command.description }),
-        ...(command.systemPrompt === undefined ? {} : { systemPrompt: command.systemPrompt }),
         ...(command.model === undefined ? {} : { model: command.model }),
+        ...(fileBacked || command.systemPrompt === undefined
+          ? {}
+          : { systemPrompt: command.systemPrompt }),
       },
       this.deps.clock,
     );
     await this.repos.agents.put(updated);
-    return updated;
+    if (command.systemPrompt !== undefined) {
+      await this.files.writeInstructions(agentId, command.systemPrompt);
+    }
+    return this.hydrate(updated);
   }
 
   // ── Skills (owned by one agent) ────────────────────────────────
@@ -413,6 +496,10 @@ export class OfficeService {
     if (!(await this.repos.agents.get(agentId))) {
       throw new Error(`agent not found: ${agentId}`);
     }
+    await this.requireFileBacked(agentId);
+
+    // Built through the domain factory so its rules — a non-empty name, a
+    // normalised slug — still decide what a skill is; the file is where it goes.
     const skill = createSkillDefinition(
       {
         agentId,
@@ -425,47 +512,66 @@ export class OfficeService {
       },
       this.deps,
     );
-    // The unique index would refuse this anyway; checking first turns a raw
-    // SQLITE_CONSTRAINT into something the UI can show a person.
     await this.assertSlugFree(agentId, skill.slug, null);
-    await this.repos.skills.put(skill);
-    return skill;
+    const stored = await this.files.writeSkill(
+      agentId,
+      skill.id,
+      {
+        slug: skill.slug,
+        name: skill.name,
+        kind: skill.kind,
+        description: skill.description,
+        content: command.content ?? '',
+        requiredTools: skill.requiredTools,
+      },
+      { createdAt: skill.createdAt, updatedAt: skill.updatedAt },
+    );
+    return stored.skill;
   }
 
   async updateSkill(command: UpdateSkillCommand): Promise<Skill> {
-    const skillId = asSkillId(command.skillId);
-    const skill = await this.repos.skills.get(skillId);
-    if (!skill) {
-      throw new Error(`skill not found: ${skillId}`);
+    const agentId = asAgentId(command.agentId);
+    await this.requireFileBacked(agentId);
+    // The id is only ever looked up under the owning agent, so one agent cannot
+    // reach another's skill by guessing an id.
+    const existing = await this.files.readSkill(agentId, command.skillId);
+    if (!existing) {
+      throw new Error(`skill not found: ${command.skillId}`);
     }
     const updated = updateSkillDefinition(
-      skill,
+      existing.skill,
       {
         ...(command.slug === undefined ? {} : { slug: command.slug }),
         ...(command.name === undefined ? {} : { name: command.name }),
         ...(command.kind === undefined ? {} : { kind: command.kind }),
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.requiredTools === undefined ? {} : { requiredTools: command.requiredTools }),
-        ...(command.content === undefined
-          ? {}
-          : {
-              source: {
-                origin: 'content' as const,
-                ref: { store: 'inline' as const, content: command.content },
-              },
-            }),
       },
       this.deps.clock,
     );
-    if (updated.slug !== skill.slug) {
-      await this.assertSlugFree(skill.agentId, updated.slug, skill.id);
+    if (updated.slug !== existing.skill.slug) {
+      await this.assertSlugFree(agentId, updated.slug, existing.skill.id);
     }
-    await this.repos.skills.put(updated);
-    return updated;
+    const stored = await this.files.writeSkill(
+      agentId,
+      existing.skill.id,
+      {
+        slug: updated.slug,
+        name: updated.name,
+        kind: updated.kind,
+        description: updated.description,
+        content: command.content ?? existing.content,
+        requiredTools: updated.requiredTools,
+      },
+      { createdAt: existing.skill.createdAt, updatedAt: updated.updatedAt },
+    );
+    return stored.skill;
   }
 
-  async deleteSkill(skillIdRaw: string): Promise<boolean> {
-    return this.repos.skills.delete(asSkillId(skillIdRaw));
+  async deleteSkill(command: DeleteSkillCommand): Promise<boolean> {
+    const agentId = asAgentId(command.agentId);
+    await this.requireFileBacked(agentId);
+    return this.files.deleteSkill(agentId, command.skillId);
   }
 
   private async assertSlugFree(
@@ -473,8 +579,8 @@ export class OfficeService {
     slug: string,
     allowId: string | null,
   ): Promise<void> {
-    const existing = await this.repos.skills.findBySlug(agentId, slug);
-    if (existing && existing.id !== allowId) {
+    const existing = await this.files.listSkills(agentId);
+    if (existing.some((s) => s.skill.slug === slug && s.skill.id !== allowId)) {
       throw new Error(`this agent already has a skill with the slug "${slug}"`);
     }
   }
@@ -490,64 +596,63 @@ export class OfficeService {
     if (!(await this.repos.agents.get(agentId))) {
       throw new Error(`agent not found: ${agentId}`);
     }
-    // Blob and row in one transaction: a half-written item would either leak a
-    // file nothing points at or leave a row pointing at nothing.
-    return this.storage.uow.run(async (repos) => {
-      const location = await repos.blobs.write(
-        { owner: { kind: 'agent', agentId }, name: `${command.title}.md` },
-        command.content,
-      );
-      const item = createAgentKnowledgeItem(
-        {
-          agentId,
-          type: command.knowledgeType,
-          title: command.title,
-          // Authored by the operator in the agent's own library.
-          source: { origin: 'human' },
-          location,
-          tags: command.tags,
-        },
-        this.deps,
-      );
-      await repos.agentKnowledge.put(item);
-      return item;
-    });
+    await this.requireFileBacked(agentId);
+    const item = createAgentKnowledgeItem(
+      {
+        agentId,
+        type: command.knowledgeType,
+        title: command.title,
+        // Authored by the operator in the agent's own library.
+        source: { origin: 'human' },
+        // Replaced by the file store with the file's own path.
+        location: { store: 'inline', content: '' },
+        tags: command.tags,
+      },
+      this.deps,
+    );
+    const stored = await this.files.writeKnowledge(
+      agentId,
+      item.id,
+      { title: item.title, type: item.type, content: command.content, tags: item.tags },
+      { createdAt: item.createdAt, updatedAt: item.updatedAt },
+    );
+    return stored.item;
   }
 
   async updateAgentKnowledge(command: UpdateAgentKnowledgeCommand): Promise<AgentKnowledge> {
-    const knowledgeId = asAgentKnowledgeId(command.knowledgeId);
-    const item = await this.repos.agentKnowledge.get(knowledgeId);
-    if (!item) {
-      throw new Error(`agent knowledge not found: ${knowledgeId}`);
+    const agentId = asAgentId(command.agentId);
+    await this.requireFileBacked(agentId);
+    const existing = await this.files.readKnowledge(agentId, command.knowledgeId);
+    if (!existing) {
+      throw new Error(`agent knowledge not found: ${command.knowledgeId}`);
     }
-    return this.storage.uow.run(async (repos) => {
-      let location: ResourceRef | undefined;
-      if (command.content !== undefined) {
-        location = await repos.blobs.write(
-          {
-            owner: { kind: 'agent', agentId: item.agentId },
-            name: `${command.title ?? item.title}.md`,
-          },
-          command.content,
-        );
-      }
-      const updated = updateAgentKnowledgeItem(
-        item,
-        {
-          ...(command.title === undefined ? {} : { title: command.title }),
-          ...(command.knowledgeType === undefined ? {} : { type: command.knowledgeType }),
-          ...(command.tags === undefined ? {} : { tags: command.tags }),
-          ...(location === undefined ? {} : { location }),
-        },
-        this.deps.clock,
-      );
-      await repos.agentKnowledge.put(updated);
-      if (location) {
-        // Drop the superseded blob only after the row points at the new one.
-        await repos.blobs.delete(item.location);
-      }
-      return updated;
-    });
+    const updated = updateAgentKnowledgeItem(
+      existing.item,
+      {
+        ...(command.title === undefined ? {} : { title: command.title }),
+        ...(command.knowledgeType === undefined ? {} : { type: command.knowledgeType }),
+        ...(command.tags === undefined ? {} : { tags: command.tags }),
+      },
+      this.deps.clock,
+    );
+    const stored = await this.files.writeKnowledge(
+      agentId,
+      existing.item.id,
+      {
+        title: updated.title,
+        type: updated.type,
+        content: command.content ?? existing.content,
+        tags: updated.tags,
+      },
+      { createdAt: existing.item.createdAt, updatedAt: updated.updatedAt },
+    );
+    return stored.item;
+  }
+
+  async deleteAgentKnowledge(command: DeleteAgentKnowledgeCommand): Promise<boolean> {
+    const agentId = asAgentId(command.agentId);
+    await this.requireFileBacked(agentId);
+    return this.files.deleteKnowledge(agentId, command.knowledgeId);
   }
 
   // ── Project workspace ──────────────────────────────────────────
@@ -876,21 +981,6 @@ export class OfficeService {
       throw new Error('agent is not a member of this project');
     }
   }
-
-  async deleteAgentKnowledge(knowledgeIdRaw: string): Promise<boolean> {
-    const knowledgeId = asAgentKnowledgeId(knowledgeIdRaw);
-    const item = await this.repos.agentKnowledge.get(knowledgeId);
-    if (!item) {
-      return false;
-    }
-    return this.storage.uow.run(async (repos) => {
-      const removed = await repos.agentKnowledge.delete(knowledgeId);
-      if (removed) {
-        await repos.blobs.delete(item.location);
-      }
-      return removed;
-    });
-  }
 }
 
 export interface AgentKnowledgeView {
@@ -903,6 +993,18 @@ export interface AgentDetailView {
   agent: AgentDefinition;
   skills: Skill[];
   knowledge: AgentKnowledgeView[];
+  /** False only while a migration conflict keeps this agent on the database. */
+  fileBacked: boolean;
+}
+
+export interface DeleteSkillCommand {
+  agentId: string;
+  skillId: string;
+}
+
+export interface DeleteAgentKnowledgeCommand {
+  agentId: string;
+  knowledgeId: string;
 }
 
 export interface UpdateAgentCommand {
@@ -925,6 +1027,9 @@ export interface CreateSkillCommand {
 }
 
 export interface UpdateSkillCommand {
+  /** The owning agent. Every agent-scoped call carries it, so no id alone
+   *  reaches another agent's file. */
+  agentId: string;
   skillId: string;
   slug?: string;
   name?: string;
@@ -943,6 +1048,7 @@ export interface CreateAgentKnowledgeCommand {
 }
 
 export interface UpdateAgentKnowledgeCommand {
+  agentId: string;
   knowledgeId: string;
   title?: string;
   knowledgeType?: KnowledgeType;

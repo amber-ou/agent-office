@@ -91,6 +91,10 @@ export class TaskRunner extends EventEmitter {
     return this.storage.repos;
   }
 
+  private runtime(): ClaudeCliRuntime {
+    return getTaskRuntime();
+  }
+
   liveRun(): { sessionId: SessionId; taskId: TaskId } | undefined {
     return this.live;
   }
@@ -103,7 +107,7 @@ export class TaskRunner extends EventEmitter {
    */
   async run(taskIdRaw: string, activeProjectId: string | undefined): Promise<RunStartedResult> {
     const { task, agent, dependencies } = await this.eligible(taskIdRaw, activeProjectId);
-    const { bundle, contents } = await assembleContext(this.repos, task);
+    const { bundle, contents } = await assembleContext(this.storage, task);
     return this.dispatch({
       task,
       agent,
@@ -141,7 +145,7 @@ export class TaskRunner extends EventEmitter {
       .filter((s) => s.taskId === task.id && s.providerSessionId)
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
 
-    const { bundle, contents } = await assembleContext(this.repos, task);
+    const { bundle, contents } = await assembleContext(this.storage, task);
     const note: ReviewNote = {
       id: DEPS.ids.next(),
       taskId: task.id,
@@ -228,7 +232,7 @@ export class TaskRunner extends EventEmitter {
         projectId: task.projectId,
         provider: agent.provider,
         taskId: task.id,
-        runtimeId: getTaskRuntime().descriptor.id,
+        runtimeId: this.runtime().descriptor.id,
         ...(input.request.resume ? { providerSessionId: input.request.resume } : {}),
       },
       DEPS,
@@ -258,9 +262,11 @@ export class TaskRunner extends EventEmitter {
       ...(input.request.contents ? { contents: input.request.contents } : {}),
       ...(input.request.resume ? { resume: input.request.resume } : {}),
       ...(input.request.prompt === undefined ? {} : { prompt: input.request.prompt }),
+      // A run may not reach any agent's own files through Claude's file tools.
+      denyPaths: [this.storage.agentFiles.root],
     };
     try {
-      const result = await getTaskRuntime().startRun(request);
+      const result = await this.runtime().startRun(request);
       const running = transitionSession(
         bindExternalRuntime(session, {
           ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
@@ -288,7 +294,7 @@ export class TaskRunner extends EventEmitter {
   /** Stop the live run, if there is one. The outcome arrives as a failure. */
   async cancel(): Promise<void> {
     if (this.live) {
-      await getTaskRuntime().stopRun(this.live.sessionId);
+      await this.runtime().stopRun(this.live.sessionId);
     }
   }
 
@@ -299,7 +305,7 @@ export class TaskRunner extends EventEmitter {
 
   private listen(): void {
     this.unsubscribe?.();
-    this.unsubscribe = getTaskRuntime().onOutcome((outcome) => {
+    this.unsubscribe = this.runtime().onOutcome((outcome) => {
       void this.finish(outcome).catch((error: unknown) => {
         // Nothing above this to catch it, and a swallowed persistence failure
         // would leave a task stuck in progress with no explanation.

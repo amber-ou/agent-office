@@ -213,7 +213,11 @@ export class OfficeSession {
         }
 
         case 'updateSkill':
+          // Never clear the selection on a malformed message: the reply the UI
+          // needs is this agent's configuration, not silence.
+          this.selectedAgentId = message.agentId || this.selectedAgentId;
           await service.updateSkill({
+            agentId: message.agentId,
             skillId: message.skillId,
             slug: message.slug,
             name: message.name,
@@ -226,7 +230,10 @@ export class OfficeSession {
           return;
 
         case 'deleteSkill':
-          await service.deleteSkill(message.skillId);
+          // Never clear the selection on a malformed message: the reply the UI
+          // needs is this agent's configuration, not silence.
+          this.selectedAgentId = message.agentId || this.selectedAgentId;
+          await service.deleteSkill({ agentId: message.agentId, skillId: message.skillId });
           await this.sendAgentDetail(service, send);
           return;
 
@@ -244,7 +251,11 @@ export class OfficeSession {
         }
 
         case 'updateAgentKnowledge':
+          // Never clear the selection on a malformed message: the reply the UI
+          // needs is this agent's configuration, not silence.
+          this.selectedAgentId = message.agentId || this.selectedAgentId;
           await service.updateAgentKnowledge({
+            agentId: message.agentId,
             knowledgeId: message.knowledgeId,
             title: message.title,
             knowledgeType: message.knowledgeType as KnowledgeType | undefined,
@@ -255,7 +266,13 @@ export class OfficeSession {
           return;
 
         case 'deleteAgentKnowledge':
-          await service.deleteAgentKnowledge(message.knowledgeId);
+          // Never clear the selection on a malformed message: the reply the UI
+          // needs is this agent's configuration, not silence.
+          this.selectedAgentId = message.agentId || this.selectedAgentId;
+          await service.deleteAgentKnowledge({
+            agentId: message.agentId,
+            knowledgeId: message.knowledgeId,
+          });
           await this.sendAgentDetail(service, send);
           return;
 
@@ -437,6 +454,7 @@ export class OfficeSession {
         agent: toOfficeAgent(detail.agent),
         skills: detail.skills.map(toOfficeSkill),
         knowledge: detail.knowledge.map(toOfficeAgentKnowledge),
+        fileBacked: detail.fileBacked,
       }),
     );
   }

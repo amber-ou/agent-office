@@ -17,6 +17,7 @@ Two series live here, and they are not the same numbering.
 | [004](004-provider-independent-domain.md)           | The domain depends on no provider, no storage and no UI                    |
 | [005](005-global-agents-and-knowledge-ownership.md) | Agents are global; knowledge ownership is strict (amends 001, 002)         |
 | [006](006-sqlite-local-persistence.md)              | SQLite is the canonical local store                                        |
+| [007](007-agent-file-storage.md)                    | Agent-owned configuration lives in per-agent files, keyed by agent id      |
 
 ## Format
 

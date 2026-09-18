@@ -426,6 +426,7 @@ export interface OfficeError {
 
 export interface AgentDetail {
   type: 'agentDetail';
+  fileBacked?: boolean;
   agent: OfficeAgent;
   skills: OfficeSkill[];
   knowledge: OfficeAgentKnowledge[];
@@ -723,6 +724,7 @@ export interface CreateSkill {
 
 export interface UpdateSkill {
   type: 'updateSkill';
+  agentId: string;
   skillId: string;
   slug?: string;
   name?: string;
@@ -734,6 +736,7 @@ export interface UpdateSkill {
 
 export interface DeleteSkill {
   type: 'deleteSkill';
+  agentId: string;
   skillId: string;
 }
 
@@ -748,6 +751,7 @@ export interface CreateAgentKnowledge {
 
 export interface UpdateAgentKnowledge {
   type: 'updateAgentKnowledge';
+  agentId: string;
   knowledgeId: string;
   title?: string;
   knowledgeType?: string;
@@ -757,6 +761,7 @@ export interface UpdateAgentKnowledge {
 
 export interface DeleteAgentKnowledge {
   type: 'deleteAgentKnowledge';
+  agentId: string;
   knowledgeId: string;
 }
 

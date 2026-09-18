@@ -1544,6 +1544,11 @@ components:
       properties:
         type:
           const: agentDetail
+        fileBacked:
+          description: |
+            False while a migration conflict keeps this agent reading from the
+            database. Editing is refused until the conflict is resolved.
+          type: boolean
         agent:
           $ref: '#/components/schemas/OfficeAgent'
         skills:
@@ -1674,10 +1679,13 @@ components:
       description: Edit a Skill. The owning agent cannot be changed.
       type: object
       additionalProperties: false
-      required: [type, skillId]
+      required: [type, agentId, skillId]
       properties:
         type:
           const: updateSkill
+        agentId:
+          description: The owning agent. Every agent-scoped call carries it.
+          type: string
         skillId:
           type: string
         slug:
@@ -1698,10 +1706,12 @@ components:
     DeleteSkill:
       type: object
       additionalProperties: false
-      required: [type, skillId]
+      required: [type, agentId, skillId]
       properties:
         type:
           const: deleteSkill
+        agentId:
+          type: string
         skillId:
           type: string
 
@@ -1732,10 +1742,12 @@ components:
       description: Edit agent knowledge. The owning agent cannot be changed.
       type: object
       additionalProperties: false
-      required: [type, knowledgeId]
+      required: [type, agentId, knowledgeId]
       properties:
         type:
           const: updateAgentKnowledge
+        agentId:
+          type: string
         knowledgeId:
           type: string
         title:
@@ -1752,10 +1764,12 @@ components:
     DeleteAgentKnowledge:
       type: object
       additionalProperties: false
-      required: [type, knowledgeId]
+      required: [type, agentId, knowledgeId]
       properties:
         type:
           const: deleteAgentKnowledge
+        agentId:
+          type: string
         knowledgeId:
           type: string
 

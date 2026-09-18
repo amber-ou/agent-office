@@ -202,6 +202,7 @@ describe('OfficeService', () => {
     expect(skill.agentId).toBe(agent.id);
 
     await office.updateSkill({
+      agentId: agent.id,
       skillId: skill.id,
       name: 'Run a user interview',
       content: 'Ask open questions, then probe.',
@@ -216,7 +217,7 @@ describe('OfficeService', () => {
       ref: { store: 'inline', content: 'Ask open questions, then probe.' },
     });
 
-    expect(await after.deleteSkill(skill.id)).toBe(true);
+    expect(await after.deleteSkill({ agentId: agent.id, skillId: skill.id })).toBe(true);
     expect((await reopen().agentDetail(agent.id))?.skills).toEqual([]);
   });
 
@@ -263,6 +264,7 @@ describe('OfficeService', () => {
 
     const office2 = reopen();
     await office2.updateAgentKnowledge({
+      agentId: agent.id,
       knowledgeId: item.id,
       title: 'Interview guide v2',
       content: 'Start with context, then tasks.',
@@ -274,7 +276,9 @@ describe('OfficeService', () => {
     expect(edited?.knowledge[0]!.item.tags).toEqual(['research', 'interviews']);
     expect(edited?.knowledge[0]!.content).toBe('Start with context, then tasks.');
 
-    expect(await reopen().deleteAgentKnowledge(item.id)).toBe(true);
+    expect(await reopen().deleteAgentKnowledge({ agentId: agent.id, knowledgeId: item.id })).toBe(
+      true,
+    );
     expect((await reopen().agentDetail(agent.id))?.knowledge).toEqual([]);
   });
 
@@ -343,6 +347,164 @@ describe('OfficeService', () => {
         content: 'c',
       }),
     ).rejects.toThrow(/agent not found/);
+  });
+
+  // ── Agent-owned files (M5) ───────────────────────────────────
+
+  it('gives a new agent its own directory and reads its config back from it', async () => {
+    const office = service();
+    const agent = await office.createAgent({
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+      systemPrompt: 'Cite the transcript.',
+    });
+    await office.createSkill({
+      agentId: agent.id,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+    await office.createAgentKnowledge({
+      agentId: agent.id,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'Start with context questions.',
+    });
+
+    const agentDir = path.join(dataRoot, 'agents', agent.id);
+    expect(fs.existsSync(path.join(agentDir, 'instructions.md'))).toBe(true);
+    expect(fs.readFileSync(path.join(agentDir, 'instructions.md'), 'utf8')).toBe(
+      'Cite the transcript.',
+    );
+    expect(fs.readdirSync(path.join(agentDir, 'skills'))).toHaveLength(1);
+    expect(fs.readdirSync(path.join(agentDir, 'knowledge'))).toHaveLength(1);
+
+    // And that is what the office reads back, after a restart.
+    const detail = (await reopen().agentDetail(agent.id))!;
+    expect(detail.fileBacked).toBe(true);
+    expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+    expect(detail.skills[0]!.slug).toBe('interview');
+    expect(detail.knowledge[0]!.content).toBe('Start with context questions.');
+  });
+
+  it('keeps agent files when the agent is renamed', async () => {
+    const office = service();
+    const agent = await office.createAgent({
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+      systemPrompt: 'Cite the transcript.',
+    });
+    const skill = await office.createSkill({
+      agentId: agent.id,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+
+    await office.updateAgent({ agentId: agent.id, name: 'Research Agent', role: 'research' });
+
+    const detail = (await reopen().agentDetail(agent.id))!;
+    expect(detail.agent.name).toBe('Research Agent');
+    expect(detail.skills.map((s) => s.id)).toEqual([skill.id]);
+    // The directory is still the id; nothing was moved.
+    expect(fs.existsSync(path.join(dataRoot, 'agents', agent.id, 'instructions.md'))).toBe(true);
+  });
+
+  it('will not let one agent reach another-s files through the office API', async () => {
+    const office = service();
+    const one = await office.createAgent({ name: 'One', role: 'ux', provider: 'claude' });
+    const two = await office.createAgent({ name: 'Two', role: 'ux', provider: 'claude' });
+    const skill = await office.createSkill({
+      agentId: two.id,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: "TWO'S CONTENT",
+    });
+    const knowledge = await office.createAgentKnowledge({
+      agentId: two.id,
+      title: 'Two knows this',
+      knowledgeType: 'markdown',
+      content: "TWO'S KNOWLEDGE",
+    });
+
+    // Every agent-scoped call is scoped by the OWNER, so a borrowed id finds
+    // nothing rather than someone else's file.
+    await expect(
+      office.updateSkill({ agentId: one.id, skillId: skill.id, name: 'Stolen' }),
+    ).rejects.toThrow(/skill not found/);
+    expect(await office.deleteSkill({ agentId: one.id, skillId: skill.id })).toBe(false);
+    await expect(
+      office.updateAgentKnowledge({
+        agentId: one.id,
+        knowledgeId: knowledge.id,
+        content: 'overwritten',
+      }),
+    ).rejects.toThrow(/not found/);
+    expect(await office.deleteAgentKnowledge({ agentId: one.id, knowledgeId: knowledge.id })).toBe(
+      false,
+    );
+
+    // Two still has both, unchanged.
+    const detail = (await reopen().agentDetail(two.id))!;
+    expect(detail.skills).toHaveLength(1);
+    expect(detail.knowledge[0]!.content).toBe("TWO'S KNOWLEDGE");
+    expect((await reopen().agentDetail(one.id))!.skills).toEqual([]);
+  });
+
+  it('rejects a path-traversal id instead of touching the filesystem', async () => {
+    const office = service();
+    const agent = await office.createAgent({ name: 'UX', role: 'ux', provider: 'claude' });
+
+    await expect(
+      office.updateSkill({ agentId: agent.id, skillId: '../../etc/passwd', name: 'x' }),
+    ).rejects.toThrow(/canonical uuid/);
+    await expect(
+      office.deleteAgentKnowledge({ agentId: agent.id, knowledgeId: '../../../secrets' }),
+    ).rejects.toThrow(/canonical uuid/);
+    await expect(office.agentDetail('../../etc')).rejects.toThrow();
+
+    expect(fs.readdirSync(path.join(dataRoot, 'agents'))).toEqual([agent.id]);
+  });
+
+  it('migrates a legacy agent and refuses to edit one whose files conflict', async () => {
+    const office = service();
+    const agent = await office.createAgent({
+      name: 'UX',
+      role: 'ux',
+      provider: 'claude',
+      systemPrompt: 'Cite the transcript.',
+    });
+
+    // Someone edits the file by hand into something the database disagrees with.
+    fs.writeFileSync(
+      path.join(dataRoot, 'agents', agent.id, 'instructions.md'),
+      'HAND-EDITED',
+      'utf8',
+    );
+    // Drop the marker so the next open has to migrate it again.
+    fs.rmSync(path.join(dataRoot, 'agents', agent.id, 'agent.json'));
+
+    const after = reopen();
+    const detail = (await after.agentDetail(agent.id))!;
+    // Blocked: it reads the database and says so, and both copies survive.
+    expect(detail.fileBacked).toBe(false);
+    expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+    expect(
+      fs.readFileSync(path.join(dataRoot, 'agents', agent.id, 'instructions.md'), 'utf8'),
+    ).toBe('HAND-EDITED');
+
+    // Editing is refused rather than picking one of two disagreeing sources.
+    await expect(
+      after.updateAgent({ agentId: agent.id, systemPrompt: 'something else' }),
+    ).rejects.toThrow(/resolve the conflict/);
+    await expect(
+      after.createSkill({ agentId: agent.id, slug: 's', name: 'S', kind: 'workflow' }),
+    ).rejects.toThrow(/resolve the conflict/);
   });
 
   // ── Project workspace ────────────────────────────────────────

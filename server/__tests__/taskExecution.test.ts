@@ -50,6 +50,23 @@ function reopen(): OfficeService {
   return service();
 }
 
+/** Every file under a directory, with its contents. */
+function snapshotTree(dir: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const walk = (current: string): void => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else {
+        files[path.relative(dir, full)] = fs.readFileSync(full, 'utf8');
+      }
+    }
+  };
+  walk(dir);
+  return files;
+}
+
 /** Wait for the live run to finish and its outcome to be recorded. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 200 && runner().liveRun(); i++) {
@@ -226,7 +243,7 @@ describe('task execution', () => {
     }
     const storage = getOfficeStorage()!;
     const task = (await office.projectDetail(projectId))!.tasks.find((t) => t.id === taskId)!;
-    const { bundle } = await assembleContext(storage.repos, task);
+    const { bundle } = await assembleContext(storage, task);
 
     // The default budget caps agent knowledge at 8 items; the other two stay in
     // the agent's library untouched.
@@ -243,7 +260,7 @@ describe('task execution', () => {
     await settle();
 
     // The Office session id is what Claude was told to use.
-    expect(claude.calls[0]).toEqual([
+    expect(claude.calls[0]!.slice(0, 6)).toEqual([
       'claude',
       '-p',
       '--output-format',
@@ -330,6 +347,63 @@ describe('task execution', () => {
     const detail = (await reopen().projectDetail(projectId))!;
     expect(detail.sessions[0]!.status).toBe('failed');
     expect(detail.sessions[0]!.error).toContain('rate limited');
+  });
+
+  it('reads the agent-s context from its files, and leaves them alone', async () => {
+    const office = service();
+    const { projectId, agentId, taskId } = await projectWithTask(office);
+    await office.createSkill({
+      agentId,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'SKILL-FROM-FILE',
+    });
+    await office.createAgentKnowledge({
+      agentId,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'KNOWLEDGE-FROM-FILE',
+    });
+
+    // Edit the files directly: what the run sees must be what is on disk.
+    const agentDir = path.join(dataRoot, 'agents', agentId);
+    fs.writeFileSync(path.join(agentDir, 'instructions.md'), 'INSTRUCTIONS-FROM-FILE', 'utf8');
+    const before = snapshotTree(agentDir);
+
+    claude.script = { result: 'done' };
+    await runner().run(taskId, projectId);
+    await settle();
+
+    const prompt = claude.prompts[0]!;
+    expect(prompt).toContain('INSTRUCTIONS-FROM-FILE');
+    expect(prompt).toContain('SKILL-FROM-FILE');
+    expect(prompt).toContain('KNOWLEDGE-FROM-FILE');
+
+    // The run wrote nothing into the agent's own files.
+    expect(snapshotTree(agentDir)).toEqual(before);
+  });
+
+  it('tells the runtime the agent files are off limits', async () => {
+    const office = service();
+    const { projectId, taskId } = await projectWithTask(office);
+    await runner().run(taskId, projectId);
+    await settle();
+
+    const call = claude.calls[0]!;
+    const settings = call[call.indexOf('--settings') + 1]!;
+    const agentsRoot = path.join(dataRoot, 'agents');
+    // Claude's own permission syntax: an absolute path takes a leading `//`.
+    expect(JSON.parse(settings)).toEqual({
+      permissions: {
+        deny: [
+          `Read(//${agentsRoot.replace(/^\/+/, '')}/**)`,
+          `Write(//${agentsRoot.replace(/^\/+/, '')}/**)`,
+          `Edit(//${agentsRoot.replace(/^\/+/, '')}/**)`,
+          `NotebookEdit(//${agentsRoot.replace(/^\/+/, '')}/**)`,
+        ],
+      },
+    });
   });
 
   it('runs one task at a time', async () => {

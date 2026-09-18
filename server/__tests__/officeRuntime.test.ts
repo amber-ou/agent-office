@@ -33,6 +33,7 @@ const { fakeClaude } = await import('./helpers/fakeClaude.js');
 
 interface AgentDetailMessage {
   type: 'agentDetail';
+  fileBacked?: boolean;
   agent: { id: string; name: string; role: string; systemPrompt: string; model?: string };
   skills: Array<{ id: string; agentId: string; slug: string; name: string; content?: string }>;
   knowledge: Array<{
@@ -318,12 +319,14 @@ describe('Agent Office runtime smoke test', () => {
 
     await client.sendForDetail({
       type: 'updateSkill',
+      agentId,
       skillId: interview.id,
       name: 'Run a user interview',
       content: 'Ask open questions, then probe.',
     });
     const afterDelete = await client.sendForDetail({
       type: 'deleteSkill',
+      agentId,
       skillId: synthesis.id,
     });
     expect(afterDelete.skills.map((s) => s.slug)).toEqual(['interview']);
@@ -341,6 +344,7 @@ describe('Agent Office runtime smoke test', () => {
     const knowledgeId = withKnowledge.knowledge[0]!.id;
     await client.sendForDetail({
       type: 'updateAgentKnowledge',
+      agentId,
       knowledgeId,
       title: 'Interview guide v2',
       content: 'Start with context, then tasks.',
@@ -370,6 +374,73 @@ describe('Agent Office runtime smoke test', () => {
       expect(detail.knowledge[0]!.title).toBe('Interview guide v2');
       expect(detail.knowledge[0]!.content).toBe('Start with context, then tasks.');
       expect(detail.knowledge[0]!.agentId).toBe(agentId);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('stores agent configuration in the agent-s own files, over the real path', async () => {
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+
+    const withAgent = await client.send({
+      type: 'createAgent',
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+      systemPrompt: 'Cite the transcript.',
+    });
+    const agentId = withAgent.agents[0]!.id;
+
+    await client.sendForDetail({
+      type: 'createSkill',
+      agentId,
+      slug: 'interview',
+      name: 'Run an interview',
+      kind: 'workflow',
+      content: 'Ask open questions.',
+    });
+    const configured = await client.sendForDetail({
+      type: 'createAgentKnowledge',
+      agentId,
+      title: 'Interview guide',
+      knowledgeType: 'ux_research',
+      content: 'Start with context questions.',
+    });
+    expect(configured.fileBacked).toBe(true);
+
+    // The files really are on disk, written by the server process.
+    const agentDir = path.join(dataRoot, 'agents', agentId);
+    expect(fs.readFileSync(path.join(agentDir, 'instructions.md'), 'utf8')).toBe(
+      'Cite the transcript.',
+    );
+    const skillDir = fs.readdirSync(path.join(agentDir, 'skills'))[0]!;
+    expect(fs.readFileSync(path.join(agentDir, 'skills', skillDir, 'SKILL.md'), 'utf8')).toContain(
+      'Ask open questions.',
+    );
+    const knowledgeFile = fs.readdirSync(path.join(agentDir, 'knowledge'))[0]!;
+    expect(fs.readFileSync(path.join(agentDir, 'knowledge', knowledgeFile), 'utf8')).toContain(
+      'Start with context questions.',
+    );
+
+    // Rename it: the directory is its id, so nothing moves.
+    await client.sendForDetail({ type: 'updateAgent', agentId, name: 'Research Agent' });
+
+    client.close();
+    server.stop();
+    closeOfficeStorage();
+
+    // Reopen: a new server reads the same files.
+    setOfficeDataRoot(dataRoot);
+    const restarted = await startServer();
+    const reopened = await OfficeClient.connect(restarted.port, restarted.token);
+    try {
+      const detail = await reopened.sendForDetail({ type: 'requestAgentDetail', agentId });
+      expect(detail.agent.name).toBe('Research Agent');
+      expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+      expect(detail.skills[0]!.content).toBe('Ask open questions.');
+      expect(detail.knowledge[0]!.content).toBe('Start with context questions.');
+      expect(fs.existsSync(path.join(agentDir, 'instructions.md'))).toBe(true);
     } finally {
       reopened.close();
     }
