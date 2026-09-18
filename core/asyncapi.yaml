@@ -123,6 +123,7 @@ components:
         - $ref: '#/components/schemas/OfficeError'
         - $ref: '#/components/schemas/AgentDetail'
         - $ref: '#/components/schemas/ProjectDetail'
+        - $ref: '#/components/schemas/OutputContent'
       discriminator: type
 
     ClientMessage:
@@ -176,6 +177,9 @@ components:
         - $ref: '#/components/schemas/UnassignTask'
         - $ref: '#/components/schemas/SetTaskStatus'
         - $ref: '#/components/schemas/DeleteTask'
+        - $ref: '#/components/schemas/RunTask'
+        - $ref: '#/components/schemas/CancelTaskRun'
+        - $ref: '#/components/schemas/RequestOutputContent'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -1764,7 +1768,7 @@ components:
         after every change to that project, its knowledge or its tasks.
       type: object
       additionalProperties: false
-      required: [type, project, memberships, knowledge, tasks]
+      required: [type, project, memberships, knowledge, tasks, sessions, outputs]
       properties:
         type:
           const: projectDetail
@@ -1782,6 +1786,117 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OfficeTask'
+        sessions:
+          description: Runs in this project, newest first. One per Claude Code execution.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeSession'
+        outputs:
+          description: What this project's tasks produced. Metadata only; content is fetched.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeOutput'
+
+    OfficeSession:
+      description: |
+        One concrete execution. NOT the agent: an AgentDefinition is permanent
+        configuration, a session is one run of it (ADR 002).
+      type: object
+      additionalProperties: false
+      required: [id, agentId, projectId, provider, status, startedAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        projectId:
+          type: string
+        taskId:
+          type: string
+        provider:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+        endedAt:
+          type: string
+        error:
+          type: string
+        providerSessionId:
+          type: string
+
+    OfficeOutput:
+      type: object
+      additionalProperties: false
+      required: [id, projectId, taskId, producedByAgentId, title, type, createdAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        taskId:
+          type: string
+        producedByAgentId:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        createdAt:
+          type: string
+
+    OutputContent:
+      description: The text of one output, fetched on demand.
+      type: object
+      additionalProperties: false
+      required: [type, outputId, readable]
+      properties:
+        type:
+          const: outputContent
+        outputId:
+          type: string
+        title:
+          type: string
+        readable:
+          type: boolean
+        content:
+          type: string
+
+    RunTask:
+      description: |
+        Dispatch one task to Claude Code. Refused unless the task is in the
+        active project, has a member agent assigned, its dependencies are done
+        and its status allows starting. One run at a time.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: runTask
+        taskId:
+          type: string
+
+    CancelTaskRun:
+      description: Stop the live run. The run then completes as a failure.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: cancelTaskRun
+
+    RequestOutputContent:
+      type: object
+      additionalProperties: false
+      required: [type, outputId]
+      properties:
+        type:
+          const: requestOutputContent
+        outputId:
+          type: string
 
     OfficeProjectDetail:
       description: A project with the settings the office can edit.

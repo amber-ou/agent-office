@@ -21,6 +21,7 @@ import type {
   ProjectDetail,
   ServerMessage,
 } from '../../../core/src/messages.js';
+import type { AgentSession, OutputItem } from '../../../domain/src/index.js';
 import type {
   AgentDefinition,
   KnowledgeType,
@@ -39,6 +40,8 @@ import { asOutputId, asProjectId, asProjectKnowledgeId } from '../../../domain/s
 import type { AgentKnowledgeView, ProjectKnowledgeView } from './officeService.js';
 import { OfficeService } from './officeService.js';
 import { getOfficeStorage, officeStorageStatus } from './officeStorage.js';
+import type { RunChange } from './taskRunner.js';
+import { getTaskRunner } from './taskRunner.js';
 
 /** The control-plane message types this handler owns. */
 const OFFICE_CLIENT_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -67,6 +70,9 @@ const OFFICE_CLIENT_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'unassignTask',
   'setTaskStatus',
   'deleteTask',
+  'runTask',
+  'cancelTaskRun',
+  'requestOutputContent',
 ]);
 
 export function isOfficeClientMessage(type: unknown): boolean {
@@ -91,6 +97,8 @@ export class OfficeSession {
   private selectedAgentId: string | undefined;
   /** Which project workspace this window has open. Also per-connection. */
   private openProjectId: string | undefined;
+  /** Live-run subscription, held only while this window's run is in flight. */
+  private runSubscription: (() => void) | undefined;
 
   async handle(message: ClientMessage, send: Send): Promise<void> {
     const storage = getOfficeStorage();
@@ -333,6 +341,35 @@ export class OfficeSession {
           await service.deleteTask(message.taskId);
           break;
 
+        // ── Execution ──
+        // The Office asks a runtime to run one task. Upstream's hook events
+        // stay observational; this is the separate downward channel (ADR 003).
+
+        case 'runTask': {
+          const runner = getTaskRunner(storage);
+          this.watchRun(runner, service, send);
+          await runner.run(message.taskId, this.activeProjectId);
+          break;
+        }
+
+        case 'cancelTaskRun':
+          await getTaskRunner(storage).cancel();
+          return;
+
+        case 'requestOutputContent': {
+          const resolved = await service.outputContent(message.outputId);
+          send(
+            asWire({
+              type: 'outputContent',
+              outputId: message.outputId,
+              readable: resolved?.contentReadable ?? false,
+              ...(resolved ? { title: resolved.output.title } : {}),
+              ...(resolved?.content === undefined ? {} : { content: resolved.content }),
+            }),
+          );
+          return;
+        }
+
         default:
           return;
       }
@@ -406,8 +443,43 @@ export class OfficeSession {
         memberships: detail.memberships.map(toOfficeMembership),
         knowledge: detail.knowledge.map(toOfficeProjectKnowledge),
         tasks: detail.tasks.map(toOfficeTask),
+        sessions: detail.sessions.map(toOfficeSession),
+        outputs: detail.outputs.map(toOfficeOutput),
       }),
     );
+  }
+
+  /**
+   * Follow the live run until it ends.
+   *
+   * A run outlives the message that started it, so the workspace is re-sent on
+   * every state change rather than left to the client to poll. The subscription
+   * is dropped the moment the run reaches a terminal state, so nothing survives
+   * the run; a send into a closed socket is caught here for the same reason.
+   */
+  private watchRun(
+    runner: ReturnType<typeof getTaskRunner>,
+    service: OfficeService,
+    send: Send,
+  ): void {
+    this.runSubscription?.();
+    const onChange = (change: RunChange): void => {
+      void this.sendProjectDetail(service, send)
+        .then(() => {
+          if (change.session.status === 'ended' || change.session.status === 'failed') {
+            this.runSubscription?.();
+            this.runSubscription = undefined;
+          }
+        })
+        .catch(() => {
+          // The window is gone. Stop following the run; the run itself is
+          // unaffected and its result is already persisted.
+          this.runSubscription?.();
+          this.runSubscription = undefined;
+        });
+    };
+    runner.on('change', onChange);
+    this.runSubscription = () => runner.off('change', onChange);
   }
 
   private async buildState(service: OfficeService): Promise<OfficeState> {
@@ -557,6 +629,7 @@ const PROJECT_WORKSPACE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'unassignTask',
   'setTaskStatus',
   'deleteTask',
+  'runTask',
   'addAgentToProject',
   'removeAgentFromProject',
 ]);
@@ -639,4 +712,32 @@ function requireField(value: string | undefined, name: string): string {
     throw new Error(`task input is missing ${name}`);
   }
   return value;
+}
+
+function toOfficeSession(session: AgentSession): ProjectDetail['sessions'][number] {
+  return {
+    id: session.id,
+    agentId: session.agentId,
+    projectId: session.projectId,
+    ...(session.taskId ? { taskId: session.taskId } : {}),
+    provider: session.provider,
+    status: session.status,
+    startedAt: session.startedAt,
+    ...(session.endedAt ? { endedAt: session.endedAt } : {}),
+    ...(session.error ? { error: session.error } : {}),
+    ...(session.providerSessionId ? { providerSessionId: session.providerSessionId } : {}),
+  };
+}
+
+function toOfficeOutput(output: OutputItem): ProjectDetail['outputs'][number] {
+  return {
+    id: output.id,
+    projectId: output.projectId,
+    taskId: output.taskId,
+    producedByAgentId: output.producedByAgentId,
+    ...(output.sessionId ? { sessionId: output.sessionId } : {}),
+    title: output.title,
+    type: output.type,
+    createdAt: output.createdAt,
+  };
 }

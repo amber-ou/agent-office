@@ -12,7 +12,13 @@
 
 import { useState } from 'react';
 
-import type { OfficeAgent, OfficeTask, OfficeTaskInput } from '../../../core/src/messages.js';
+import type {
+  OfficeAgent,
+  OfficeSession,
+  OfficeTask,
+  OfficeTaskInput,
+  OutputContent,
+} from '../../../core/src/messages.js';
 import { Button } from '../components/ui/Button.js';
 import { Modal } from '../components/ui/Modal.js';
 import type {
@@ -71,7 +77,13 @@ interface ProjectWorkspacePanelProps {
     | 'unassignTask'
     | 'setTaskStatus'
     | 'deleteTask'
+    | 'runTask'
+    | 'cancelTaskRun'
+    | 'viewOutput'
+    | 'clearOutput'
   >;
+  /** The output text last fetched, shown in place. */
+  outputContent: OutputContent | null;
   error: string | null;
 }
 
@@ -98,6 +110,14 @@ function splitList(value: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+/** The run state of a task, as a short suffix. Empty when it has never run. */
+function describeRun(session: OfficeSession | undefined): string {
+  if (!session) {
+    return '';
+  }
+  return session.status === 'failed' ? ' · run failed' : ` · run ${session.status}`;
+}
+
 /** One TaskInput rendered as a line the operator can read and retype. */
 function describeInput(input: OfficeTaskInput): string {
   switch (input.kind) {
@@ -116,6 +136,7 @@ export function ProjectWorkspacePanel({
   detail,
   agents,
   commands,
+  outputContent,
   error,
 }: ProjectWorkspacePanelProps) {
   const project = detail.project;
@@ -137,6 +158,13 @@ export function ProjectWorkspacePanel({
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   const openTask = detail.tasks.find((t) => t.id === openTaskId) ?? null;
+  // One run at a time, so a live session anywhere in the project blocks the
+  // Run button on every other task.
+  const liveSession = detail.sessions.find(
+    (s) => s.status === 'starting' || s.status === 'running' || s.status === 'idle',
+  );
+  const lastSessionFor = (taskId: string): OfficeSession | undefined =>
+    detail.sessions.find((s) => s.taskId === taskId);
 
   const saveProject = () => {
     const name = form.name.trim();
@@ -434,9 +462,25 @@ export function ProjectWorkspacePanel({
                       · {task.status} · {task.priority} ·{' '}
                       {task.assignedAgentId ? nameOf(task.assignedAgentId) : 'unassigned'}
                       {task.dependencies.length > 0 && ` · ${task.dependencies.length} dep(s)`}
+                      {describeRun(lastSessionFor(task.id))}
                     </span>
                   </span>
                   <span className="flex gap-4 shrink-0">
+                    {liveSession?.taskId === task.id ? (
+                      <Button size="sm" onClick={() => commands.cancelTaskRun()}>
+                        Stop
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant={liveSession ? 'disabled' : 'accent'}
+                        disabled={liveSession !== undefined}
+                        onClick={() => commands.runTask(task.id)}
+                        title="Run this task with its assigned agent"
+                      >
+                        Run
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant={task.id === openTaskId ? 'active' : 'default'}
@@ -451,6 +495,60 @@ export function ProjectWorkspacePanel({
                 </li>
               ))}
             </ul>
+          )}
+        </section>
+
+        {/* ── Runs and results ─────────────────────────────────── */}
+        <section className={sectionClass}>
+          <h3 className={headingClass}>Runs &amp; Results</h3>
+          {detail.sessions.length === 0 ? (
+            <p className={emptyClass}>Nothing has run yet.</p>
+          ) : (
+            <ul>
+              {detail.sessions.slice(0, 10).map((session) => {
+                const task = detail.tasks.find((t) => t.id === session.taskId);
+                const outputs = detail.outputs.filter((o) => o.sessionId === session.id);
+                return (
+                  <li key={session.id} className={rowClass}>
+                    <span className="truncate min-w-0">
+                      {task?.title ?? session.taskId ?? 'session'}{' '}
+                      <span className="text-text-muted text-sm">
+                        · {session.status} · {nameOf(session.agentId)}
+                      </span>
+                      {session.error && (
+                        <span className="text-warning text-sm block truncate">{session.error}</span>
+                      )}
+                    </span>
+                    <span className="flex gap-4 shrink-0">
+                      {outputs.map((output) => (
+                        <Button
+                          key={output.id}
+                          size="sm"
+                          onClick={() => commands.viewOutput(output.id)}
+                        >
+                          View result
+                        </Button>
+                      ))}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {outputContent && (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-6">
+                <span className="text-accent-bright truncate">{outputContent.title}</span>
+                <Button size="sm" onClick={() => commands.clearOutput()}>
+                  Close result
+                </Button>
+              </div>
+              <pre className="bg-btn-bg border-2 border-border p-6 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">
+                {outputContent.readable
+                  ? (outputContent.content ?? '')
+                  : 'The result could not be read.'}
+              </pre>
+            </div>
           )}
         </section>
 

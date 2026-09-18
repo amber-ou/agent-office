@@ -15,8 +15,10 @@ import type {
   AgentDefinition,
   AgentId,
   AgentKnowledge,
+  AgentSession,
   DomainDeps,
   KnowledgeType,
+  OutputItem,
   Project,
   ProjectAgent,
   ProjectId,
@@ -35,6 +37,7 @@ import type {
 import {
   asAgentId,
   asAgentKnowledgeId,
+  asOutputId,
   asProjectId,
   asProjectKnowledgeId,
   assertDependenciesValid,
@@ -116,6 +119,9 @@ export interface ProjectDetailView {
   memberships: ProjectAgent[];
   knowledge: ProjectKnowledgeView[];
   tasks: Task[];
+  /** Executions in this project, newest first. */
+  sessions: AgentSession[];
+  outputs: OutputItem[];
 }
 
 export interface UpdateProjectCommand {
@@ -554,15 +560,30 @@ export class OfficeService {
     if (!project) {
       return null;
     }
-    const [memberships, knowledge, tasks] = await Promise.all([
+    const [memberships, knowledge, tasks, sessions, outputs] = await Promise.all([
       this.repos.projectAgents.listByProject(projectId),
       this.repos.projectKnowledge.listByProject(projectId),
       this.repos.tasks.listByProject(projectId),
+      this.repos.sessions.listByProject(projectId),
+      this.repos.outputs.listByProject(projectId),
     ]);
     const resolved = await Promise.all(
       knowledge.map(async (item) => ({ item, ...(await this.readContent(item.location)) })),
     );
-    return { project, memberships, knowledge: resolved, tasks };
+    // Newest run first: the one the operator just started is the one they want.
+    const ordered = [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    return { project, memberships, knowledge: resolved, tasks, sessions: ordered, outputs };
+  }
+
+  /** One output's text, resolved through the BlobStore. */
+  async outputContent(
+    outputIdRaw: string,
+  ): Promise<{ output: OutputItem; content?: string; contentReadable: boolean } | null> {
+    const output = await this.repos.outputs.get(asOutputId(outputIdRaw));
+    if (!output) {
+      return null;
+    }
+    return { output, ...(await this.readContent(output.location)) };
   }
 
   async updateProject(command: UpdateProjectCommand): Promise<Project> {

@@ -14,6 +14,7 @@
 import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
 import type { SqliteStorage } from '../../../storage/src/index.js';
 import { LATEST_SCHEMA_VERSION, openSqliteStorage } from '../../../storage/src/index.js';
+import { resetTaskRunner } from './taskRunner.js';
 
 export interface OfficeStorage {
   repos: Repositories;
@@ -87,6 +88,8 @@ export function officeStorageStatus(): OfficeStorageStatusSnapshot {
 
 /** Close the database and forget any recorded failure. Used on shutdown and by tests. */
 export function closeOfficeStorage(): void {
+  // The task runner holds this database's repositories; it must not outlive it.
+  resetTaskRunner();
   opened?.close();
   opened = null;
   openError = null;

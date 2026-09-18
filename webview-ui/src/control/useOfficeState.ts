@@ -14,14 +14,17 @@ import type {
   OfficeAgent,
   OfficeAgentKnowledge,
   OfficeMembership,
+  OfficeOutput,
   OfficeProject,
   OfficeProjectDetail,
   OfficeProjectKnowledge,
+  OfficeSession,
   OfficeSkill,
   OfficeState,
   OfficeStorageStatus,
   OfficeTask,
   OfficeTaskInput,
+  OutputContent,
   ProjectDetail,
 } from '../../../core/src/messages.js';
 import { transport } from '../transport/index.js';
@@ -39,6 +42,9 @@ export interface ProjectDetailView {
   memberships: OfficeMembership[];
   knowledge: OfficeProjectKnowledge[];
   tasks: OfficeTask[];
+  /** Runs in this project, newest first. */
+  sessions: OfficeSession[];
+  outputs: OfficeOutput[];
 }
 
 export interface OfficeView {
@@ -52,6 +58,8 @@ export interface OfficeView {
   agentDetail: AgentDetailView | null;
   /** The open project's workspace, or null when none is open. */
   projectDetail: ProjectDetailView | null;
+  /** The last output whose text was fetched, or null. */
+  outputContent: OutputContent | null;
   /** Last failed operation, cleared by the next successful snapshot. */
   error: string | null;
 }
@@ -64,6 +72,7 @@ const EMPTY: OfficeView = {
   tasks: [],
   agentDetail: null,
   projectDetail: null,
+  outputContent: null,
   error: null,
 };
 
@@ -155,6 +164,10 @@ export interface OfficeCommands {
   unassignTask(taskId: string): void;
   setTaskStatus(taskId: string, status: string): void;
   deleteTask(taskId: string): void;
+  runTask(taskId: string): void;
+  cancelTaskRun(): void;
+  viewOutput(outputId: string): void;
+  clearOutput(): void;
   openAgent(agentId: string): void;
   closeAgent(): void;
   updateAgent(agentId: string, fields: UpdateAgentFields): void;
@@ -186,6 +199,7 @@ export function useOfficeState(): OfficeView & OfficeCommands {
           // configuration surface keeps whatever the last agentDetail put there.
           agentDetail: current.agentDetail,
           projectDetail: current.projectDetail,
+          outputContent: current.outputContent,
           // A fresh snapshot is the truth; any earlier failure is now history.
           error: null,
         }));
@@ -209,9 +223,14 @@ export function useOfficeState(): OfficeView & OfficeCommands {
             memberships: detail.memberships,
             knowledge: detail.knowledge,
             tasks: detail.tasks,
+            sessions: detail.sessions,
+            outputs: detail.outputs,
           },
           error: null,
         }));
+      } else if (message.type === 'outputContent') {
+        const content = message as OutputContent;
+        setView((current) => ({ ...current, outputContent: content }));
       } else if (message.type === 'officeError') {
         const failure = `${message.operation}: ${message.message}`;
         setView((current) => ({ ...current, error: failure }));
@@ -356,6 +375,22 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     transport.send({ type: 'deleteTask', taskId });
   }, []);
 
+  const runTask = useCallback((taskId: string) => {
+    transport.send({ type: 'runTask', taskId });
+  }, []);
+
+  const cancelTaskRun = useCallback(() => {
+    transport.send({ type: 'cancelTaskRun' });
+  }, []);
+
+  const viewOutput = useCallback((outputId: string) => {
+    transport.send({ type: 'requestOutputContent', outputId });
+  }, []);
+
+  const clearOutput = useCallback(() => {
+    setView((current) => ({ ...current, outputContent: null }));
+  }, []);
+
   const openAgent = useCallback((agentId: string) => {
     transport.send({ type: 'requestAgentDetail', agentId });
   }, []);
@@ -454,6 +489,10 @@ export function useOfficeState(): OfficeView & OfficeCommands {
     unassignTask,
     setTaskStatus,
     deleteTask,
+    runTask,
+    cancelTaskRun,
+    viewOutput,
+    clearOutput,
     openAgent,
     closeAgent,
     updateAgent,

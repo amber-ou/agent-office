@@ -21,7 +21,7 @@
     "webview-ui/src/office/engine/index.ts",
     "webview-ui/src/office/layout/index.ts",
     "webview-ui/src/office/sprites/index.ts",
-    "runtime/src/adapter.ts"
+    "runtime/src/index.ts"
   ],
   "workspaces": {
     ".": {

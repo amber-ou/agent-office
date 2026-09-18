@@ -27,6 +27,9 @@ vi.mock('os', async () => {
 const { PixelAgentsServer } = await import('../src/server.js');
 const { AgentStateStore } = await import('../src/agentStateStore.js');
 const { closeOfficeStorage, setOfficeDataRoot } = await import('../src/control/officeStorage.js');
+const { setTaskRuntime } = await import('../src/control/taskRunner.js');
+const { ClaudeCliRuntime } = await import('../../runtime/src/index.js');
+const { fakeClaude } = await import('./helpers/fakeClaude.js');
 
 interface AgentDetailMessage {
   type: 'agentDetail';
@@ -73,6 +76,15 @@ interface ProjectDetailMessage {
     dependencies: string[];
     inputs: Array<{ kind: string; value?: string; knowledgeId?: string; path?: string }>;
   }>;
+  sessions: Array<{
+    id: string;
+    agentId: string;
+    projectId: string;
+    taskId?: string;
+    status: string;
+    error?: string;
+  }>;
+  outputs: Array<{ id: string; taskId: string; sessionId?: string; title: string }>;
 }
 
 interface OfficeStateMessage {
@@ -119,6 +131,21 @@ class OfficeClient {
     return next;
   }
 
+  nextProjectDetail(): Promise<ProjectDetailMessage> {
+    return this.next<ProjectDetailMessage>('projectDetail');
+  }
+
+  /** Ask for one output's text and wait for it. */
+  async outputContent(
+    outputId: string,
+  ): Promise<{ outputId: string; readable: boolean; content?: string }> {
+    const next = this.next<{ outputId: string; readable: boolean; content?: string }>(
+      'outputContent',
+    );
+    this.socket.send(JSON.stringify({ type: 'requestOutputContent', outputId }));
+    return next;
+  }
+
   nextOfficeState(): Promise<OfficeStateMessage> {
     return this.next<OfficeStateMessage>('officeState');
   }
@@ -162,6 +189,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setTaskRuntime(undefined);
   server?.stop();
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
@@ -535,6 +563,56 @@ describe('Agent Office runtime smoke test', () => {
     } finally {
       client.close();
     }
+  });
+
+  it('runs a task over the real WebSocket path and returns its result', async () => {
+    // Only the `claude` process is a stand-in; the server, the socket, the
+    // bridge and the database are all real.
+    const claude = fakeClaude();
+    claude.script = { result: 'Welcome aboard.' };
+    setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
+
+    const { port, token } = await startServer();
+    const client = await OfficeClient.connect(port, token);
+
+    const withProject = await client.send({ type: 'createProject', name: 'AiWow' });
+    const projectId = withProject.projects[0]!.id;
+    const withAgent = await client.send({
+      type: 'createAgent',
+      name: 'UX Agent',
+      role: 'ux',
+      provider: 'claude',
+    });
+    const agentId = withAgent.agents[0]!.id;
+    await client.send({ type: 'addAgentToProject', projectId, agentId });
+    await client.sendForProject({ type: 'requestProjectDetail', projectId });
+    const withTask = await client.sendForProject({
+      type: 'createTask',
+      projectId,
+      title: 'Draft the welcome copy',
+      assignedAgentId: agentId,
+    });
+    const taskId = withTask.tasks[0]!.id;
+    await client.sendForProject({ type: 'setTaskStatus', taskId, status: 'todo' });
+
+    // Run it. The workspace is pushed again as the run starts and as it ends.
+    const running = await client.sendForProject({ type: 'runTask', taskId });
+    expect(running.sessions[0]!.taskId).toBe(taskId);
+
+    let finished = running;
+    for (let i = 0; i < 20 && finished.sessions[0]!.status !== 'ended'; i++) {
+      finished = await client.nextProjectDetail();
+    }
+    expect(finished.sessions[0]!.status).toBe('ended');
+    expect(finished.tasks.find((t) => t.id === taskId)!.status).toBe('review');
+    expect(finished.outputs).toHaveLength(1);
+
+    // The result text is fetched on demand.
+    const content = await client.outputContent(finished.outputs[0]!.id);
+    expect(content.readable).toBe(true);
+    expect(content.content).toBe('Welcome aboard.');
+
+    client.close();
   });
 
   it('removes a membership without deleting the global agent', async () => {

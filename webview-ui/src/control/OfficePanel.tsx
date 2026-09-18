@@ -260,6 +260,7 @@ export function OfficePanel({ isOpen, onClose }: OfficePanelProps) {
           detail={office.projectDetail}
           agents={office.agents}
           commands={office}
+          outputContent={office.outputContent}
           error={office.error}
         />
       )}

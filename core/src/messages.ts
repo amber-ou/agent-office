@@ -42,7 +42,8 @@ export type ServerMessage =
   | OfficeState
   | OfficeError
   | AgentDetail
-  | ProjectDetail;
+  | ProjectDetail
+  | OutputContent;
 
 export type ClientMessage =
   | WebviewReady
@@ -91,7 +92,10 @@ export type ClientMessage =
   | AssignTask
   | UnassignTask
   | SetTaskStatus
-  | DeleteTask;
+  | DeleteTask
+  | RunTask
+  | CancelTaskRun
+  | RequestOutputContent;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -454,6 +458,8 @@ export interface ProjectDetail {
   memberships: OfficeMembership[];
   knowledge: OfficeProjectKnowledge[];
   tasks: OfficeTask[];
+  sessions: OfficeSession[];
+  outputs: OfficeOutput[];
 }
 
 export interface OfficeProjectDetail {
@@ -478,6 +484,38 @@ export interface OfficeProjectKnowledge {
   contentReadable?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OfficeSession {
+  id: string;
+  agentId: string;
+  projectId: string;
+  taskId?: string;
+  provider: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+  error?: string;
+  providerSessionId?: string;
+}
+
+export interface OfficeOutput {
+  id: string;
+  projectId: string;
+  taskId: string;
+  producedByAgentId: string;
+  sessionId?: string;
+  title: string;
+  type: string;
+  createdAt: string;
+}
+
+export interface OutputContent {
+  type: 'outputContent';
+  outputId: string;
+  title?: string;
+  readable: boolean;
+  content?: string;
 }
 
 export interface WebviewReady {
@@ -780,4 +818,18 @@ export interface SetTaskStatus {
 export interface DeleteTask {
   type: 'deleteTask';
   taskId: string;
+}
+
+export interface RunTask {
+  type: 'runTask';
+  taskId: string;
+}
+
+export interface CancelTaskRun {
+  type: 'cancelTaskRun';
+}
+
+export interface RequestOutputContent {
+  type: 'requestOutputContent';
+  outputId: string;
 }
