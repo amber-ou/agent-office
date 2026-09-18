@@ -94,17 +94,40 @@ the parent environment is not inherited, and the process list is the sandbox's
 own. `CLAUDE_CONFIG_DIR` was confirmed by running the CLI, not by reading its
 binary.
 
-**Not verified: any of this on WSL2.** The host is a Linux container, not WSL.
-Outstanding for acceptance on the real host:
+**Not verified: any of this on WSL2.** The development host is a Linux
+container, not WSL. `npm run verify:wsl2` is the acceptance run for a real
+host — one command, no API calls, no installs, no sudo, nothing written
+outside a temporary directory. It uses this checkout's build and the product's
+own sandbox builder, so it measures what ships rather than a second
+configuration written to pass. A check that could not run reports SKIP and the
+whole run reports INCOMPLETE; a SKIP never counts as success.
 
-1. `bwrap` present, and an unprivileged user namespace permitted (Ubuntu 24.04
-   ships `kernel.apparmor_restrict_unprivileged_userns=1`, which refuses it).
-   If it is refused, that is a host decision to bring back — this work will not
-   change the setting.
-2. `/init` absent inside the namespace really does stop `cmd.exe` and
-   `powershell.exe` from running, i.e. binfmt has no interpreter to reach.
-3. A project on a Windows drive (`/mnt/c/...`, drvfs) binds read-only and
-   performs acceptably.
-4. A real `claude -p` run inside the sandbox authenticates with
-   `CLAUDE_CODE_OAUTH_TOKEN`, and a revision of the same Task resumes with
-   `--resume`. Both are unexercised here: no paid run was made.
+```
+npm run verify:wsl2
+npm run verify:wsl2 -- --project /mnt/c/Users/you/some-project
+```
+
+What it answers on the real host:
+
+1. `bwrap` present and runnable, and an unprivileged user namespace actually
+   enterable — with the failure classified as MISSING_BWRAP, MISSING_LIBS,
+   BROKEN_BINARY or POLICY (Ubuntu 24.04 ships
+   `kernel.apparmor_restrict_unprivileged_userns=1`, which refuses it). The
+   script changes no host setting; a POLICY result is a decision to bring back.
+2. Inside the namespace the product would build: agent files absent, a bound
+   project readable and not writable, the run's own config and work directories
+   writable, no inherited environment, its own process list, and `/init`,
+   `/mnt` and `/run/WSL` unbound.
+3. Workspace path rules, including a symlink that resolves onto office data.
+4. A real project path (`--project`): its mount type, and that it binds
+   read-only and is readable. Nothing is ever written to a real project.
+5. Windows interop **attempted**, not inferred: a copy of `cmd.exe` is executed
+   inside the sandbox. If interop does not work outside the sandbox either, the
+   result is SKIP — "it did not run" is not "it was blocked".
+6. This checkout's server starts, an unauthenticated socket receives no office
+   data across the whole handshake and several messages, and an authorized one
+   can read and write.
+
+Still outside that run, and still unverified: a real `claude -p` inside the
+sandbox authenticating with `CLAUDE_CODE_OAUTH_TOKEN`, and a revision of the
+same Task resuming with `--resume`. Both need one paid execution.

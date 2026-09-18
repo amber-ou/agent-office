@@ -15,6 +15,7 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { ClaudeCliRuntime } from '../../runtime/src/index.js';
 import {
   buildSandboxArgv,
   INHERITED_ENV_KEYS,
@@ -205,6 +206,23 @@ describe.skipIf(!bwrapAvailable)('inside a real bubblewrap namespace', () => {
     const { stdout } = inside('ls /init /mnt /run/WSL 2>&1');
     expect(stdout).not.toMatch(/^\/init$/m);
     expect(stdout).toMatch(/No such file or directory/);
+  });
+});
+
+describe.skipIf(!bwrapAvailable)('the dispatch probe', () => {
+  it('succeeds on a host where a namespace can be created', async () => {
+    // The probe decides whether any task may run, so a probe that fails for
+    // its own reasons — a missing /bin in its bind list, say — would stop the
+    // office dead on an otherwise healthy machine.
+    const runtime = new ClaudeCliRuntime();
+    await expect(runtime.probeSandbox()).resolves.toMatchObject({ ok: true });
+  });
+
+  it('fails closed when the launcher is missing', async () => {
+    const runtime = new ClaudeCliRuntime({ sandboxCommand: 'definitely-not-installed-bwrap' });
+    const health = await runtime.probeSandbox();
+    expect(health.ok).toBe(false);
+    expect(health.detail).toBeTruthy();
   });
 });
 

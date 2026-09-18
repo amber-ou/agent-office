@@ -277,7 +277,28 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
     return new Promise((resolve) => {
       const child = this.spawn(
         this.sandboxCommand,
-        ['--unshare-all', '--share-net', '--ro-bind-try', '/usr', '/usr', '--', '/bin/true'],
+        [
+          '--unshare-all',
+          '--share-net',
+          // Enough of a userland for the probe's own command to exist. Binding
+          // only /usr leaves /bin missing on a system where it is a symlink,
+          // and the probe then fails for a reason that has nothing to do with
+          // whether a namespace can be created.
+          '--ro-bind-try',
+          '/usr',
+          '/usr',
+          '--ro-bind-try',
+          '/bin',
+          '/bin',
+          '--ro-bind-try',
+          '/lib',
+          '/lib',
+          '--ro-bind-try',
+          '/lib64',
+          '/lib64',
+          '--',
+          '/bin/true',
+        ],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );
       let stderr = '';
