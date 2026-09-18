@@ -190,6 +190,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
   setTaskRuntime(undefined);
   server?.stop();
   closeOfficeStorage();
@@ -641,6 +642,8 @@ describe('Agent Office runtime smoke test', () => {
     // bridge and the database are all real.
     const claude = fakeClaude();
     claude.script = { result: 'Welcome aboard.' };
+    // A sandboxed run authenticates from the environment.
+    process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
     setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
 
     const { port, token } = await startServer();

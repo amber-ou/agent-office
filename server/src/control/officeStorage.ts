@@ -36,6 +36,9 @@ export interface OfficeStorage {
   agentFiles: AgentFileStore;
   /** Which agents have moved to files. Durable, and not inside those files. */
   agentMigrations: AgentMigrationStore;
+  /** The data root, and the per-run scratch tree inside it. */
+  dataRoot: string;
+  runtimeRoot: string;
   databasePath: string;
   schemaVersion: number;
 }
@@ -92,6 +95,8 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
     reviews: storage.reviews,
     agentFiles: storage.agentFiles,
     agentMigrations: storage.agentMigrations,
+    dataRoot: storage.dataRoot,
+    runtimeRoot: storage.runtimeRoot,
     databasePath: storage.databasePath,
     schemaVersion: storage.schemaVersion,
   };

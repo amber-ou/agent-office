@@ -76,5 +76,8 @@
         "__tests__/**/*.ts"
       ]
     }
-  }
+  },
+  "ignoreBinaries": [
+    "bwrap"
+  ]
 }

@@ -39,6 +39,8 @@ import type {
 import { RuntimeKind } from './adapter.js';
 import type { ContentsById } from './promptRenderer.js';
 import { renderPrompt } from './promptRenderer.js';
+import type { SandboxSpec } from './sandbox.js';
+import { buildSandboxArgv } from './sandbox.js';
 
 /** The subset of `child_process.spawn` this adapter uses. Injectable for tests. */
 export type SpawnLike = typeof nodeSpawn;
@@ -63,8 +65,17 @@ export interface ClaudeStartRunRequest extends StartRunRequest {
    * Directories this run may not read or write through Claude's file tools.
    * Per-run rather than per-runtime, so the caller that knows where the agent
    * files live decides, whoever constructed the runtime.
+   *
+   * A second line of defence only: these rules bind Claude's own file tools,
+   * not `Bash`. The sandbox below is what actually removes the paths.
    */
   denyPaths?: readonly string[];
+  /**
+   * Run inside an OS sandbox. When set, `claude` is executed through
+   * bubblewrap with the namespace this describes, and the child inherits no
+   * environment beyond what the spec names.
+   */
+  sandbox?: SandboxSpec;
 }
 
 export interface ClaudeRunOutcome {
@@ -90,6 +101,8 @@ export interface ClaudeCliRuntimeOptions {
   denyPaths?: readonly string[];
   /** Executable name or path. Default `claude`. */
   command?: string;
+  /** The sandbox launcher. Default `bwrap`. */
+  sandboxCommand?: string;
   spawn?: SpawnLike;
   /** Extra arguments, e.g. a sandbox flag. Appended after ours. */
   extraArgs?: readonly string[];
@@ -126,6 +139,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
   };
 
   private readonly command: string;
+  private readonly sandboxCommand: string;
   private readonly spawn: SpawnLike;
   private readonly extraArgs: readonly string[];
   private readonly timeoutMs: number;
@@ -137,6 +151,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
 
   constructor(options: ClaudeCliRuntimeOptions = {}) {
     this.command = options.command ?? 'claude';
+    this.sandboxCommand = options.sandboxCommand ?? 'bwrap';
     this.spawn = options.spawn ?? nodeSpawn;
     this.extraArgs = options.extraArgs ?? [];
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -173,9 +188,18 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
       ...this.extraArgs,
     ];
 
-    const child = this.spawn(this.command, args, {
+    // Sandboxed runs go through bubblewrap; `env` is handed over by the spec,
+    // never inherited, so the Office's own secrets stay out of the child.
+    const sandboxed = request.sandbox !== undefined;
+    const command = sandboxed ? this.sandboxCommand : this.command;
+    const argv = sandboxed ? [...buildSandboxArgv(request.sandbox!), this.command, ...args] : args;
+
+    const child = this.spawn(command, argv, {
       cwd: request.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // bwrap sets the child's own environment with --setenv; passing ours
+      // through as well would defeat the point.
+      ...(sandboxed ? { env: {} } : {}),
     });
 
     let stdout = '';
@@ -212,7 +236,7 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
         sessionId: request.sessionId,
         ok: false,
         result: '',
-        error: `could not start ${this.command}: ${error.message}`,
+        error: `could not start ${command}: ${error.message}`,
       });
     });
 
@@ -240,6 +264,37 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
 
   async stopRun(sessionId: SessionId): Promise<void> {
     this.live.get(sessionId)?.kill();
+  }
+
+  /**
+   * Is the sandbox usable on this machine?
+   *
+   * Asked before every dispatch and answered by actually entering a namespace:
+   * bubblewrap can be installed and still be refused (an unprivileged user
+   * namespace disabled by policy), and a run must not start when it is.
+   */
+  async probeSandbox(): Promise<RuntimeHealth> {
+    return new Promise((resolve) => {
+      const child = this.spawn(
+        this.sandboxCommand,
+        ['--unshare-all', '--share-net', '--ro-bind-try', '/usr', '/usr', '--', '/bin/true'],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stderr = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (error: Error) =>
+        resolve({ ok: false, detail: `${this.sandboxCommand}: ${error.message}` }),
+      );
+      child.on('close', (code: number | null) =>
+        resolve(
+          code === 0
+            ? { ok: true }
+            : { ok: false, detail: stderr.trim() || `${this.sandboxCommand} exited ${code}` },
+        ),
+      );
+    });
   }
 
   async health(): Promise<RuntimeHealth> {

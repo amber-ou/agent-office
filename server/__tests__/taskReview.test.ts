@@ -75,10 +75,14 @@ beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-review-'));
   setOfficeDataRoot(dataRoot);
   claude = fakeClaude();
+  // A sandboxed run authenticates from the environment; without this the
+  // runner refuses to dispatch at all, which is its own test below.
+  process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
   setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
 });
 
 afterEach(() => {
+  delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
   setTaskRuntime(undefined);
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
@@ -89,14 +93,14 @@ describe('human review', () => {
   it('accepts a reviewed result without invoking Claude', async () => {
     const office = service();
     const { projectId, taskId } = await reviewedTask(office);
-    const callsBefore = claude.calls.length;
+    const callsBefore = claude.calls.filter((argv) => argv.includes('-p')).length;
 
     await office.acceptTask(taskId);
 
     const detail = (await reopen().projectDetail(projectId))!;
     expect(detail.tasks[0]!.status).toBe('done');
     // No second process, and the result is still there.
-    expect(claude.calls).toHaveLength(callsBefore);
+    expect(claude.calls.filter((argv) => argv.includes('-p'))).toHaveLength(callsBefore);
     expect(detail.outputs).toHaveLength(1);
     expect(detail.sessions).toHaveLength(1);
   });
@@ -117,7 +121,7 @@ describe('human review', () => {
     await expect(runner().revise(task.id, 'change it', project.id)).rejects.toThrow(
       /only a task in review/,
     );
-    expect(claude.calls).toEqual([]);
+    expect(claude.calls.filter((argv) => argv.includes('-p'))).toEqual([]);
 
     // And an accepted task cannot be accepted twice.
     const { taskId } = await reviewedTask(office);
@@ -128,10 +132,10 @@ describe('human review', () => {
   it('requires non-empty feedback', async () => {
     const office = service();
     const { projectId, taskId } = await reviewedTask(office);
-    const callsBefore = claude.calls.length;
+    const callsBefore = claude.calls.filter((argv) => argv.includes('-p')).length;
 
     await expect(runner().revise(taskId, '   ', projectId)).rejects.toThrow(/must not be empty/);
-    expect(claude.calls).toHaveLength(callsBefore);
+    expect(claude.calls.filter((argv) => argv.includes('-p'))).toHaveLength(callsBefore);
     // Nothing moved.
     expect((await office.projectDetail(projectId))!.tasks[0]!.status).toBe('review');
   });
@@ -145,8 +149,10 @@ describe('human review', () => {
     await runner().revise(taskId, 'Mobile flow needs another state', projectId);
     await settle();
 
-    // The second invocation resumes the first run's provider session.
-    const revisionCall = claude.calls[1]!;
+    // The second invocation resumes the first run's provider session. Each run
+    // is preceded by its sandbox probe, so the claude calls are picked out.
+    const claudeCalls = claude.calls.filter((argv) => argv.includes('-p'));
+    const revisionCall = claudeCalls[1]!;
     expect(revisionCall).toContain('--resume');
     expect(revisionCall[revisionCall.indexOf('--resume') + 1]).toBe(first.providerSessionId);
     expect(revisionCall).not.toContain('--session-id');
@@ -256,6 +262,33 @@ describe('human review', () => {
     expect(after.agent).toEqual(before!.agent);
     expect(after.skills).toEqual(before!.skills);
     expect(after.knowledge).toEqual([]);
+  });
+
+  it('does not inherit the previous agent-s session when the task is reassigned', async () => {
+    const office = service();
+    const { projectId, agentId, taskId } = await reviewedTask(office);
+    const first = (await office.projectDetail(projectId))!.sessions[0]!;
+
+    // Hand the task to someone else, then ask for changes.
+    const other = await office.createAgent({ name: 'QA', role: 'qa', provider: 'claude' });
+    await office.addAgentToProject({ projectId, agentId: other.id });
+    await office.assignTask({ taskId, agentId: other.id });
+
+    claude.script = { result: 'fresh start' };
+    await runner().revise(taskId, 'Try it differently', projectId);
+    await settle();
+
+    // A new conversation: no --resume, and a session id of its own.
+    const claudeCalls = claude.calls.filter((argv) => argv.includes('-p'));
+    expect(claudeCalls[1]).not.toContain('--resume');
+    expect(claudeCalls[1]).toContain('--session-id');
+
+    const sessions = (await reopen().projectDetail(projectId))!.sessions;
+    expect(sessions[0]!.agentId).toBe(other.id);
+    expect(sessions[0]!.providerSessionId).not.toBe(first.providerSessionId);
+    // The earlier agent's run and output are untouched.
+    expect(sessions[1]!.agentId).toBe(agentId);
+    expect((await reopen().projectDetail(projectId))!.outputs).toHaveLength(2);
   });
 
   it('still runs one task at a time', async () => {

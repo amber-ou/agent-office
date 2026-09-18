@@ -22,3 +22,11 @@ export type {
 export { ClaudeCliRuntime } from './claudeCliRuntime.js';
 export type { ContentsById, RenderedPrompt } from './promptRenderer.js';
 export { renderPrompt } from './promptRenderer.js';
+export type { ForbiddenRoots, SandboxSpec } from './sandbox.js';
+export {
+  buildSandboxArgv,
+  INHERITED_ENV_KEYS,
+  inheritedEnv,
+  resolveBindPath,
+  SandboxPathError,
+} from './sandbox.js';

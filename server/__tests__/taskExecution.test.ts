@@ -50,6 +50,21 @@ function reopen(): OfficeService {
   return service();
 }
 
+/**
+ * The `claude` part of a sandboxed invocation.
+ *
+ * Every run goes through bubblewrap now, so a call is
+ * `[bwrap, …namespace…, --, claude, …]` and the probe that precedes it is its
+ * own call. This picks out the arguments Claude itself was given.
+ */
+function claudeArgv(calls: string[][]): string[] {
+  const call = calls.find((argv) => argv.includes('claude') && argv.includes('-p'));
+  if (!call) {
+    throw new Error('no claude invocation was recorded');
+  }
+  return call.slice(call.indexOf('claude'));
+}
+
 /** Every file under a directory, with its contents. */
 function snapshotTree(dir: string): Record<string, string> {
   const files: Record<string, string> = {};
@@ -101,10 +116,14 @@ beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-exec-'));
   setOfficeDataRoot(dataRoot);
   claude = fakeClaude();
+  // A sandboxed run authenticates from the environment; without this the
+  // runner refuses to dispatch at all, which is its own test below.
+  process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
   setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
 });
 
 afterEach(() => {
+  delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
   setTaskRuntime(undefined);
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
@@ -260,7 +279,7 @@ describe('task execution', () => {
     await settle();
 
     // The Office session id is what Claude was told to use.
-    expect(claude.calls[0]!.slice(0, 6)).toEqual([
+    expect(claudeArgv(claude.calls).slice(0, 6)).toEqual([
       'claude',
       '-p',
       '--output-format',
@@ -390,7 +409,7 @@ describe('task execution', () => {
     await runner().run(taskId, projectId);
     await settle();
 
-    const call = claude.calls[0]!;
+    const call = claudeArgv(claude.calls);
     const settings = call[call.indexOf('--settings') + 1]!;
     const agentsRoot = path.join(dataRoot, 'agents');
     // Claude's own permission syntax: an absolute path takes a leading `//`.
@@ -404,6 +423,61 @@ describe('task execution', () => {
         ],
       },
     });
+  });
+
+  it('refuses to dispatch when the sandbox is unavailable', async () => {
+    const office = service();
+    const { projectId, taskId } = await projectWithTask(office);
+    claude.sandboxAvailable = false;
+
+    // Fail closed: there is no unsandboxed fallback.
+    await expect(runner().run(taskId, projectId)).rejects.toThrow(/sandbox is unavailable/);
+    expect(claude.prompts).toEqual([]);
+    // The task did not move.
+    expect(
+      (await office.projectDetail(projectId))!.tasks.find((t) => t.id === taskId)!.status,
+    ).toBe('todo');
+  });
+
+  it('refuses to dispatch without a credential in the environment', async () => {
+    const office = service();
+    const { projectId, taskId } = await projectWithTask(office);
+    delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+
+    await expect(runner().run(taskId, projectId)).rejects.toThrow(/CLAUDE_CODE_OAUTH_TOKEN/);
+    expect(claude.prompts).toEqual([]);
+  });
+
+  it('gives each agent and each task its own config and working directory', async () => {
+    const office = service();
+    const first = await projectWithTask(office);
+    const second = await office.createTask({
+      projectId: first.projectId,
+      title: 'Another task',
+      assignedAgentId: first.agentId,
+    });
+    await office.setTaskStatus({ taskId: second.id, status: 'todo' });
+
+    await runner().run(first.taskId, first.projectId);
+    await settle();
+    await runner().run(second.id, first.projectId);
+    await settle();
+
+    const runtimeRoot = path.join(dataRoot, 'runtime', first.agentId);
+    expect(fs.readdirSync(runtimeRoot).sort()).toEqual([first.taskId, second.id].sort());
+    for (const taskId of [first.taskId, second.id]) {
+      expect(fs.readdirSync(path.join(runtimeRoot, taskId)).sort()).toEqual(['config', 'work']);
+    }
+
+    // The same task keeps its directory, so a revision resumes in place.
+    const call = claudeArgv(claude.calls);
+    expect(call).toContain('--session-id');
+    const sandboxCall = claude.calls.find(
+      (argv) => argv.includes('--unshare-all') && argv.includes('claude'),
+    )!;
+    expect(sandboxCall.join(' ')).toContain(
+      `--setenv CLAUDE_CONFIG_DIR ${path.join(runtimeRoot, first.taskId, 'config')}`,
+    );
   });
 
   it('runs one task at a time', async () => {

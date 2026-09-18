@@ -93,8 +93,25 @@ export function handleClientMessage(
 
   // Agent Office control plane (projects, agents, memberships, tasks). Handled
   // by its own session object so the switch below stays upstream's.
-  if (isOfficeClientMessage(msg.type) && ctx.office) {
-    void ctx.office.handle(msg as unknown as ClientMessage, send);
+  //
+  // PRIVILEGED ONLY. These messages read and write every agent's instructions,
+  // skills and knowledge, so an unauthenticated socket must not reach them:
+  // this server listens on loopback, and loopback is exactly where a sandboxed
+  // run — or, under WSL, anything on the Windows side — would come from. The
+  // filesystem isolation would be worth nothing if the same data were readable
+  // over this channel without a credential.
+  if (isOfficeClientMessage(msg.type)) {
+    if (!ctx.privileged) {
+      send({
+        type: 'officeError',
+        operation: msg.type,
+        message: 'not authorized: the Agent Office control plane requires the server token',
+      });
+      return;
+    }
+    if (ctx.office) {
+      void ctx.office.handle(msg as unknown as ClientMessage, send);
+    }
     return;
   }
 
@@ -371,7 +388,9 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // Open the Agent Office database and push the first snapshot alongside the
   // rest of the ready handshake, so the office has its persisted state from the
   // first frame rather than after a round trip.
-  if (ctx.office) {
+  // Same gate as every other office message: an unprivileged socket watches
+  // the pixel office and is told nothing about projects or agents.
+  if (ctx.office && ctx.privileged) {
     void ctx.office.initialState().then(send);
   }
 

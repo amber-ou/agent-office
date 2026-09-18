@@ -41,6 +41,8 @@ import { SqliteUnitOfWork } from './unitOfWork.js';
 export const DEFAULT_DATA_DIR_NAME = '.agent-office';
 export const DATABASE_FILE_NAME = 'agent-office.db';
 export const BLOBS_DIR_NAME = 'blobs';
+/** Per-agent, per-task scratch: a run's own Claude config and working copy. */
+export const RUNTIME_DIR_NAME = 'runtime';
 
 /** `~/.agent-office` — deliberately separate from upstream's `~/.pixel-agents`. */
 export function defaultDataRoot(): string {
@@ -78,8 +80,10 @@ export interface SqliteStorage {
    */
   agentMigrations: AgentMigrationStore;
   db: SqliteDatabase;
-  /** Where the database and blobs live. */
+  /** Where the database, blobs, agent files and run scratch live. */
   dataRoot: string;
+  /** `<dataRoot>/runtime` — one directory per agent per task. */
+  runtimeRoot: string;
   databasePath: string;
   /** Schema version the file is at after opening. */
   schemaVersion: number;
@@ -115,6 +119,8 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
   const agentsRoot = path.join(dataRoot, AGENTS_DIR_NAME);
   fs.mkdirSync(agentsRoot, { recursive: true });
   const agentFiles = new FileAgentStore(agentsRoot);
+  const runtimeRoot = path.join(dataRoot, RUNTIME_DIR_NAME);
+  fs.mkdirSync(runtimeRoot, { recursive: true });
 
   const repos: Repositories = {
     projects: new SqliteProjectRepository(db),
@@ -138,6 +144,7 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
     agentMigrations: new SqliteAgentMigrationStore(db),
     db,
     dataRoot,
+    runtimeRoot,
     databasePath,
     schemaVersion: LATEST_SCHEMA_VERSION,
     applied,

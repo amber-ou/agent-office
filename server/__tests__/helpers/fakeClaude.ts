@@ -13,6 +13,8 @@ import type { SpawnLike } from '../../../runtime/src/index.js';
 
 export interface FakeClaude {
   spawn: SpawnLike;
+  /** Set false to make the sandbox probe fail, as an unusable host would. */
+  sandboxAvailable?: boolean;
   /** Every prompt a run was given, in order. */
   prompts: string[];
   /** Every argument list, in order, command first. */
@@ -37,6 +39,15 @@ export function fakeClaude(): FakeClaude {
       kill: (signal?: string) => boolean;
     };
     state.calls.push([command, ...args]);
+
+    // The sandbox probe and `--version` never write to stdin, so they answer
+    // immediately rather than waiting for a prompt that is not coming.
+    if (args.includes('--unshare-all') && args.includes('/bin/true')) {
+      setTimeout(() => {
+        child.stdout.push(null);
+        child.emit('close', state.sandboxAvailable === false ? 1 : 0);
+      }, 0);
+    }
 
     let prompt = '';
     child.stdin = new Writable({

@@ -15,12 +15,16 @@
  */
 
 import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 
 import type {
   AgentDefinition,
+  AgentId,
   AgentSession,
   OutputItem,
+  Project,
   Repositories,
   SessionId,
   Task,
@@ -39,13 +43,30 @@ import {
   transitionTask,
   uuidIdGenerator,
 } from '../../../domain/src/index.js';
-import type { ClaudeRunOutcome, ClaudeStartRunRequest } from '../../../runtime/src/index.js';
-import { ClaudeCliRuntime } from '../../../runtime/src/index.js';
+import type {
+  ClaudeRunOutcome,
+  ClaudeStartRunRequest,
+  SandboxSpec,
+} from '../../../runtime/src/index.js';
+import { ClaudeCliRuntime, inheritedEnv, resolveBindPath } from '../../../runtime/src/index.js';
 import type { ReviewNote } from '../../../storage/src/index.js';
 import { assembleContext } from './contextAssembly.js';
 import type { OfficeStorage } from './officeStorage.js';
 
 const DEPS = { ids: uuidIdGenerator, clock: systemClock };
+
+/**
+ * The credential a sandboxed run authenticates with.
+ *
+ * A sandbox has no `~/.claude`, so an interactive login on this machine is not
+ * reachable from inside it. Only the OAuth token is read: an API key would be a
+ * different credential and a different billing route, and switching one for the
+ * other silently is not this code's decision to make.
+ */
+function runCredential(): string | undefined {
+  const token = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  return token && token.trim() ? token : undefined;
+}
 
 export interface RunStartedResult {
   sessionId: SessionId;
@@ -140,9 +161,14 @@ export class TaskRunner extends EventEmitter {
       throw new Error(`only a task in review can be revised (this one is "${task.status}")`);
     }
 
-    // The newest finished run for this task is the conversation to continue.
+    // The newest finished run for this task BY THIS AGENT is the conversation
+    // to continue. A task reassigned to someone else starts fresh: the previous
+    // agent's conversation is its own material, not something the next agent
+    // inherits — and under the sandbox it cannot even see that transcript.
     const previous = (await this.repos.sessions.listByProject(task.projectId))
-      .filter((s) => s.taskId === task.id && s.providerSessionId)
+      .filter(
+        (s) => s.taskId === task.id && s.agentId === task.assignedAgentId && s.providerSessionId,
+      )
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
 
     const { bundle, contents } = await assembleContext(this.storage, task);
@@ -210,7 +236,59 @@ export class TaskRunner extends EventEmitter {
     if (!agent) {
       throw new Error(`agent not found: ${task.assignedAgentId}`);
     }
+
+    // Fail closed. No sandbox, no run — there is no unsandboxed fallback,
+    // because the fallback is precisely the thing the sandbox exists to stop.
+    const sandbox = await this.runtime().probeSandbox();
+    if (!sandbox.ok) {
+      throw new Error(
+        `the run sandbox is unavailable, so no task can be dispatched: ${sandbox.detail ?? 'unknown reason'}`,
+      );
+    }
+    if (!runCredential()) {
+      throw new Error(
+        'no CLAUDE_CODE_OAUTH_TOKEN in the environment: a sandboxed run cannot reach the login in your home directory, so the token has to be provided to Agent Office',
+      );
+    }
     return { task, agent, dependencies };
+  }
+
+  /**
+   * The namespace one run sees: its own config and working directories, the
+   * project read-only, and nothing else.
+   *
+   * Both directories are keyed by agent AND task, so no two agents and no two
+   * tasks share a Claude configuration, a transcript or a workspace.
+   */
+  private sandboxFor(agentId: AgentId, taskId: TaskId, project: Project): SandboxSpec {
+    const base = path.join(this.storage.runtimeRoot, agentId, taskId);
+    const configDir = path.join(base, 'config');
+    const workDir = path.join(base, 'work');
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
+
+    const forbidden = {
+      officeDataRoot: this.storage.dataRoot,
+      others: [path.join(os.homedir(), '.pixel-agents'), path.join(os.homedir(), '.claude')],
+    };
+    const readOnlyPaths = project.settings.workspacePaths.map((candidate) =>
+      // Resolved before binding: a symlink, a `..` or an alias that lands on
+      // Office's own data is refused here rather than mounted.
+      resolveBindPath(candidate, forbidden, (p) => fs.realpathSync(p)),
+    );
+
+    return {
+      configDir,
+      workDir,
+      readOnlyPaths,
+      env: {
+        ...inheritedEnv(),
+        // In the environment, never on the command line and never in a file the
+        // run could keep. The run can still read its own environment and write
+        // the token wherever it can write — that is not preventable here.
+        CLAUDE_CODE_OAUTH_TOKEN: runCredential() ?? '',
+      },
+    };
   }
 
   /** Record the run, then hand it to the runtime. Shared by run and revise. */
@@ -253,17 +331,23 @@ export class TaskRunner extends EventEmitter {
     this.listen();
     this.emitChange(task.id, session);
 
+    const sandbox = this.sandboxFor(agent.id, task.id, input.request.context.project);
     const request: ClaudeStartRunRequest = {
       sessionId: session.id,
       agent,
       context: input.request.context,
-      cwd: input.request.context.project.settings.workspacePaths[0] ?? os.homedir(),
+      // Fixed per TASK, not per run: Claude stores a session's transcript under
+      // a key derived from the working directory, so a revision that moved
+      // would be a revision that could not resume.
+      cwd: sandbox.workDir,
       // The renderer needs the blob text; the runtime reads no storage itself.
       ...(input.request.contents ? { contents: input.request.contents } : {}),
       ...(input.request.resume ? { resume: input.request.resume } : {}),
       ...(input.request.prompt === undefined ? {} : { prompt: input.request.prompt }),
       // A run may not reach any agent's own files through Claude's file tools.
+      // The sandbox is what removes those paths; this is the second line.
       denyPaths: [this.storage.agentFiles.root],
+      sandbox,
     };
     try {
       const result = await this.runtime().startRun(request);

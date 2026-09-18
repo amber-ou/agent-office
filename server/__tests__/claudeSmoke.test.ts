@@ -11,6 +11,7 @@
  * revision — so the proof costs as little as possible.
  */
 
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -25,7 +26,11 @@ import {
 } from '../src/control/officeStorage.js';
 import { getTaskRunner } from '../src/control/taskRunner.js';
 
-const enabled = process.env.AGENT_OFFICE_CLAUDE_SMOKE === '1';
+// A run is sandboxed and authenticates from the environment, so both have to be
+// present. Missing either is a skip, never a silent unsandboxed run.
+const sandboxReady = spawnSync('bwrap', ['--version'], { stdio: 'ignore' }).status === 0;
+const credentialReady = Boolean(process.env['CLAUDE_CODE_OAUTH_TOKEN']);
+const enabled = process.env.AGENT_OFFICE_CLAUDE_SMOKE === '1' && sandboxReady && credentialReady;
 let dataRoot: string;
 
 function service(): OfficeService {
