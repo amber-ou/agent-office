@@ -76,6 +76,18 @@ export async function migrateAgentFiles(
   };
 
   for (const agent of await repos.agents.list()) {
+    // A native-CC-linked agent (see `linkNativeAgent.ts`) has its external
+    // file as its ONLY source. Migrating it here would copy the database's
+    // cached `systemPrompt` into `discovery/agent.md` — exactly the second,
+    // divergeable copy `linkNativeAgentFile` exists to avoid — and the
+    // `markMigrated` that follows would then pull it into the ordinary CC
+    // discovery bridge, junctioning a second, stale copy next to the real
+    // file. It is skipped here, not only left unmigrated by never calling
+    // `state.markMigrated`, because an unmigrated agent still falls into the
+    // write path below on every future run.
+    if ((await files.readOfficeMeta(agent.id))?.nativeAgentPath) {
+      continue;
+    }
     if (await state.isMigrated(agent.id)) {
       // Already handed over. Whatever the legacy rows still hold is history,
       // and the only question left is whether the files are still there.

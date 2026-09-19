@@ -73,6 +73,17 @@ export interface OfficeAgentMeta {
   provider: string;
   memory: { notes: string; recentTaskSummaryLimit: number };
   appearance: { palette?: number; hueShift?: number };
+  /**
+   * Set only for an agent whose Claude Code subagent file was created and is
+   * maintained BY Claude Code itself, outside Office (`linkNativeAgent.ts`),
+   * pointing at that file's absolute path. When set, this agent has no
+   * `discovery/agent.md` of its own and is never migrated to file-backed
+   * status: the external file is the sole source for its name, description,
+   * tools, model and instructions, read fresh on every dispatch and every
+   * re-link rather than copied in. Office never writes to the file this
+   * points at.
+   */
+  nativeAgentPath?: string;
 }
 
 /** What a skill file holds. Ids and ownership come from the path, never the body. */

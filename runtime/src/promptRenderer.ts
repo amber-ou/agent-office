@@ -117,6 +117,33 @@ export function renderPrompt(
   return { text: kept.map((s) => s.text).join('\n\n'), omitted };
 }
 
+/**
+ * The prompt for a run dispatched through `claude --agent <name>` (see
+ * `claudeCliRuntime.ts`), where the named Claude Code subagent's OWN system
+ * prompt, tools and model already replace the defaults for the whole
+ * session. Rendering the "You are ..." / agent section here as well would
+ * put a second, Office-assembled persona on top of the one CC just loaded
+ * from its own file — so this omits it and the skills/knowledge sections
+ * (out of scope for a native-linked agent today), keeping only Office's own
+ * operating contract and the task itself.
+ */
+export function renderNativeAgentPrompt(bundle: AgentContextBundle): string {
+  const sections: string[] = [];
+  if (bundle.globalInstructions.trim()) {
+    sections.push(heading('Operating instructions') + bundle.globalInstructions.trim());
+  }
+  sections.push(renderTask(bundle));
+  sections.push(
+    heading('Project') +
+      `${bundle.project.name} (${bundle.project.status}).` +
+      paragraph(bundle.project.description) +
+      (bundle.project.settings.workspacePaths.length > 0
+        ? paragraph(`Workspace paths: ${bundle.project.settings.workspacePaths.join(', ')}`)
+        : ''),
+  );
+  return sections.join('\n\n');
+}
+
 function renderTask(bundle: AgentContextBundle): string {
   const task = bundle.task;
   const inputs = task.inputs.map((input) => {

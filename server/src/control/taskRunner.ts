@@ -48,8 +48,14 @@ import type {
   ClaudeStartRunRequest,
   SandboxSpec,
 } from '../../../runtime/src/index.js';
-import { ClaudeCliRuntime, inheritedEnv, resolveBindPath } from '../../../runtime/src/index.js';
+import {
+  ClaudeCliRuntime,
+  inheritedEnv,
+  renderNativeAgentPrompt,
+  resolveBindPath,
+} from '../../../runtime/src/index.js';
 import type { ReviewNote } from '../../../storage/src/index.js';
+import { parseNativeAgentFile } from '../../../storage/src/index.js';
 import { assembleContext } from './contextAssembly.js';
 import type { OfficeStorage } from './officeStorage.js';
 import type { RunMode } from './runMode.js';
@@ -129,14 +135,23 @@ export class TaskRunner extends EventEmitter {
    * leaves the task exactly as it was.
    */
   async run(taskIdRaw: string, activeProjectId: string | undefined): Promise<RunStartedResult> {
-    const { task, agent, dependencies, mode } = await this.eligible(taskIdRaw, activeProjectId);
+    const { task, agent, dependencies, mode, nativeAgent } = await this.eligible(
+      taskIdRaw,
+      activeProjectId,
+    );
     const { bundle, contents } = await assembleContext(this.storage, task);
     return this.dispatch({
       task,
       agent,
       dependencies,
       mode,
-      request: { context: bundle, contents },
+      nativeAgent,
+      request: nativeAgent
+        ? // CC is about to load this agent's own persona via --agent; sending
+          // it again as an Office-assembled section would be a second, and
+          // possibly contradictory, copy on top of it.
+          { context: bundle, prompt: renderNativeAgentPrompt(bundle) }
+        : { context: bundle, contents },
     });
   }
 
@@ -159,7 +174,10 @@ export class TaskRunner extends EventEmitter {
     if (!body) {
       throw new Error('review feedback must not be empty');
     }
-    const { task, agent, dependencies, mode } = await this.eligible(taskIdRaw, activeProjectId);
+    const { task, agent, dependencies, mode, nativeAgent } = await this.eligible(
+      taskIdRaw,
+      activeProjectId,
+    );
     if (task.status !== 'review') {
       throw new Error(`only a task in review can be revised (this one is "${task.status}")`);
     }
@@ -190,9 +208,10 @@ export class TaskRunner extends EventEmitter {
       dependencies,
       mode,
       note,
+      nativeAgent,
       request: {
         context: bundle,
-        contents,
+        ...(nativeAgent ? {} : { contents }),
         ...(previous?.providerSessionId
           ? {
               resume: previous.providerSessionId,
@@ -200,7 +219,9 @@ export class TaskRunner extends EventEmitter {
               // last answer, so re-sending them would only cost tokens.
               prompt: revisionPrompt(body),
             }
-          : {}),
+          : nativeAgent
+            ? { prompt: renderNativeAgentPrompt(bundle) }
+            : {}),
       },
     });
   }
@@ -209,7 +230,17 @@ export class TaskRunner extends EventEmitter {
   private async eligible(
     taskIdRaw: string,
     activeProjectId: string | undefined,
-  ): Promise<{ task: Task; agent: AgentDefinition; dependencies: Task[]; mode: RunMode }> {
+  ): Promise<{
+    task: Task;
+    agent: AgentDefinition;
+    dependencies: Task[];
+    mode: RunMode;
+    /** CC's own `name` for the agent, present only when this agent is linked
+     *  to a native Claude Code subagent file (see `linkNativeAgent.ts`). Read
+     *  fresh from that file right here, never from a cached copy, so a
+     *  dispatch always uses whatever the file currently says. */
+    nativeAgent?: string;
+  }> {
     if (this.live) {
       throw new Error('another task is already running');
     }
@@ -256,7 +287,43 @@ export class TaskRunner extends EventEmitter {
     if (decision.refusal) {
       throw new Error(decision.refusal);
     }
-    return { task, agent, dependencies, mode: decision.mode };
+
+    const officeMeta = await this.storage.agentFiles.readOfficeMeta(agent.id);
+    const nativeAgentPath = officeMeta?.nativeAgentPath;
+    if (nativeAgentPath === undefined) {
+      return { task, agent, dependencies, mode: decision.mode };
+    }
+    // A native-linked agent has no discovery/agent.md of its own (see
+    // linkNativeAgent.ts) — its file IS the run, so it is read fresh here,
+    // at dispatch time, rather than trusting whatever name/tools the
+    // database cached when it was last linked or refreshed.
+    if (decision.mode === 'sandboxed') {
+      throw new Error(
+        `agent "${agent.name}" is linked to a native Claude Code agent file, which a sandboxed run cannot reach: ` +
+          '~/.claude is deliberately outside the sandbox namespace (see ADR 007). Dispatch this task from an ' +
+          'unsandboxed (Windows shell-mode) run for now.',
+      );
+    }
+    let nativeText: string;
+    try {
+      nativeText = fs.readFileSync(nativeAgentPath, 'utf8');
+    } catch (error) {
+      throw new Error(
+        `agent "${agent.name}" is linked to ${nativeAgentPath}, which could not be read: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const parsed = parseNativeAgentFile(nativeText);
+    if (!parsed.ok) {
+      throw new Error(`agent "${agent.name}"'s native file ${nativeAgentPath}: ${parsed.reason}`);
+    }
+    return {
+      task,
+      agent,
+      dependencies,
+      mode: decision.mode,
+      nativeAgent: parsed.agent.fields.name,
+    };
   }
 
   /**
@@ -304,9 +371,10 @@ export class TaskRunner extends EventEmitter {
     dependencies: Task[];
     mode: RunMode;
     note?: ReviewNote;
+    nativeAgent?: string;
     request: Pick<ClaudeStartRunRequest, 'context' | 'contents' | 'resume' | 'prompt'>;
   }): Promise<RunStartedResult> {
-    const { task, agent, dependencies, note } = input;
+    const { task, agent, dependencies, note, nativeAgent } = input;
 
     // The session is the run's identity in the Office, and its id is what the
     // provider is told to use — one identifier, no mapping table. A revision
@@ -351,6 +419,7 @@ export class TaskRunner extends EventEmitter {
       ...(input.request.contents ? { contents: input.request.contents } : {}),
       ...(input.request.resume ? { resume: input.request.resume } : {}),
       ...(input.request.prompt === undefined ? {} : { prompt: input.request.prompt }),
+      ...(nativeAgent ? { nativeAgent } : {}),
       // A run may not reach any agent's own files through Claude's file tools.
       // The sandbox is what removes those paths; this is the second line.
       denyPaths: [this.storage.agentFiles.root],

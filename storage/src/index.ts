@@ -53,8 +53,21 @@ export {
 export { AGENTS_DIR_NAME, FileAgentStore } from './files/fileAgentStore.js';
 export type { ImportAgentsReport } from './files/importAgentsFromDisk.js';
 export { importAgentsFromDisk } from './files/importAgentsFromDisk.js';
+export type {
+  LinkNativeAgentFailure,
+  LinkNativeAgentResult,
+  LinkNativeAgentSuccess,
+} from './files/linkNativeAgent.js';
+export { linkNativeAgentFile } from './files/linkNativeAgent.js';
 export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
 export { migrateAgentFiles } from './files/migrateAgentFiles.js';
+export type {
+  NativeAgentFields,
+  NativeAgentParseError,
+  NativeAgentParseResult,
+  ParsedNativeAgent,
+} from './files/nativeAgentFile.js';
+export { parseNativeAgentFile } from './files/nativeAgentFile.js';
 export { clone, InMemoryRepository } from './memory/inMemoryRepository.js';
 export type { InMemoryRepositories, InMemoryStorage } from './memory/repositories.js';
 export {

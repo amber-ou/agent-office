@@ -127,7 +127,8 @@
     "vercel:prepare": "npm run test:report && node scripts/assemble-vercel-output.mjs",
     "knip": "knip",
     "verify:wsl2": "tsx scripts/verify-wsl2.ts",
-    "verify:cc-bridge": "tsx scripts/verify-cc-bridge.ts"
+    "verify:cc-bridge": "tsx scripts/verify-cc-bridge.ts",
+    "link-native-agent": "tsx scripts/link-native-agent.ts"
   },
   "devDependencies": {
     "@asyncapi/modelina": "^5.10.1",

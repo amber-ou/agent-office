@@ -76,6 +76,17 @@ export interface ClaudeStartRunRequest extends StartRunRequest {
    * environment beyond what the spec names.
    */
   sandbox?: SandboxSpec;
+  /**
+   * Run as this Claude Code subagent for the whole session: `claude --agent
+   * <name>`. CC replaces its default system prompt, tool restrictions and
+   * model with the named subagent's own — read from ITS file, not from
+   * anything Office sends — so `request.agent.model` is not also passed as
+   * `--model`: `--agent` already sets it, and passing both would contest the
+   * same setting. The caller is expected to have already rendered `prompt`
+   * (e.g. via `renderNativeAgentPrompt`) without an Office-assembled persona
+   * section, since CC is about to load its own.
+   */
+  nativeAgent?: string;
 }
 
 export interface ClaudeRunOutcome {
@@ -183,7 +194,14 @@ export class ClaudeCliRuntime implements AgentRuntimeAdapter {
       // Resuming names an existing session; starting names the new one. Passing
       // both would be asking for two different sessions at once.
       ...(request.resume ? ['--resume', request.resume] : ['--session-id', request.sessionId]),
-      ...(request.agent.model ? ['--model', request.agent.model] : []),
+      // --agent replaces the default system prompt/tools/model with the named
+      // subagent's own, so --model would contest a setting --agent already
+      // makes — the two are mutually exclusive here, never both passed.
+      ...(request.nativeAgent
+        ? ['--agent', request.nativeAgent]
+        : request.agent.model
+          ? ['--model', request.agent.model]
+          : []),
       ...denySettingsArgs(request.denyPaths ?? this.denyPaths),
       ...this.extraArgs,
     ];
