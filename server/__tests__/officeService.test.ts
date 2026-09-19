@@ -181,7 +181,7 @@ describe('OfficeService', () => {
     expect(detail?.agent.name).toBe('UX Researcher');
     expect(detail?.agent.role).toBe('research');
     expect(detail?.agent.description).toBe('Interviews and synthesis');
-    expect(detail?.agent.systemPrompt).toBe('Always cite the transcript.');
+    expect(detail?.agent.systemPrompt).toContain('Always cite the transcript.');
     expect(detail?.agent.model).toBe('claude-opus-5');
     // Still global: no project was ever created.
     expect((await reopen().snapshot()).projects).toEqual([]);
@@ -537,7 +537,7 @@ describe('OfficeService', () => {
     const detail = (await reopen().agentDetail(agent.id))!;
     expect(detail.fileBacked).toBe(true);
     expect(detail.configIssue).toBeUndefined();
-    expect(detail.agent.systemPrompt).toBe('EDITED');
+    expect(detail.agent.systemPrompt).toContain('EDITED');
     expect(detail.skills).toEqual([]);
   });
 

@@ -56,6 +56,10 @@ export interface OfficeStorage {
   agentFiles: AgentFileStore;
   /** Which agents have moved to files. Durable, and not inside those files. */
   agentMigrations: AgentMigrationStore;
+  /** Where the Claude Code discovery bridge links into — same value the
+   *  boot-time sync uses, so a mutation-triggered sync (see officeService.ts)
+   *  never targets a different place. */
+  ccDiscoveryPaths: AgentDiscoveryPaths;
   /** The data root, and the per-run scratch tree inside it. */
   dataRoot: string;
   runtimeRoot: string;
@@ -132,6 +136,7 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
     reviews: storage.reviews,
     agentFiles: storage.agentFiles,
     agentMigrations: storage.agentMigrations,
+    ccDiscoveryPaths: claudeDiscoveryPathsOverride ?? defaultClaudeDiscoveryPaths(),
     dataRoot: storage.dataRoot,
     runtimeRoot: storage.runtimeRoot,
     databasePath: storage.databasePath,
@@ -225,40 +230,77 @@ async function runCcBridge(storage: SqliteStorage): Promise<CcBridgeRunResult | 
       );
     }
 
-    const sync = await syncCcBridge(
-      storage.repos,
-      storage.agentFiles,
-      storage.agentMigrations,
-      claudeDiscoveryPathsOverride ?? defaultClaudeDiscoveryPaths(),
-      now,
-    );
-    if (sync.linksCreated > 0) {
-      console.log(`[Agent Office] Created ${sync.linksCreated} Claude Code discovery link(s).`);
-    }
-    for (const damage of sync.damaged) {
-      console.warn(
-        `[Agent Office] Claude Code discovery bridge: ${damage.resource} ${
-          damage.resourceId ?? damage.agentId
-        } is damaged (${damage.reason}) and was not linked.`,
-      );
-    }
-    for (const skipped of sync.skippedForeignLinks) {
-      console.warn(
-        `[Agent Office] Claude Code discovery bridge left ${skipped} alone — it is not a link this bridge created.`,
-      );
-    }
-    for (const failure of sync.linkFailures) {
-      console.error(
-        `[Agent Office] Claude Code discovery bridge could not create a link at ${failure.path} (${failure.reason}). ` +
-          `${failure.resource} ${failure.resourceId ?? failure.agentId} is not discoverable by Claude Code until this is resolved.`,
-      );
-    }
-
-    return { imported, backfill, sync };
+    const sync = await runCcBridgeSync(toOfficeStorage(storage));
+    return sync ? { imported, backfill, sync } : null;
   } catch (error) {
     console.error('[Agent Office] Claude Code discovery bridge failed:', error);
     return null;
   }
+}
+
+/**
+ * Serializes every `syncCcBridge` call — the boot-time pass and every
+ * mutation-triggered call from `officeService.ts` alike — so two calls can
+ * never race on the same `discovery/agent.md`. `writeCcFields` and the
+ * knowledge-pointer append are each their own read-then-write; without this,
+ * an overlapping call can win a lost-update race and silently drop the
+ * other's write (observed: the knowledge pointer missing when a mutation
+ * landed within the boot-time pass's own window).
+ */
+let bridgeQueue: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(run: () => Promise<T>): Promise<T> {
+  const result = bridgeQueue.then(run, run);
+  bridgeQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/**
+ * Runs the Claude Code discovery sync for an already-open storage, queued
+ * behind every other in-flight sync for the SAME process. Call this after
+ * any write to an agent's files — `officeService.ts` does, after every
+ * command that touches `this.files` — not only at boot.
+ */
+export async function runCcBridgeSync(storage: OfficeStorage): Promise<CcBridgeSyncReport | null> {
+  return serialized(async () => {
+    try {
+      const sync = await syncCcBridge(
+        storage.repos,
+        storage.agentFiles,
+        storage.agentMigrations,
+        storage.ccDiscoveryPaths,
+        systemClock.now(),
+      );
+      if (sync.linksCreated > 0) {
+        console.log(`[Agent Office] Created ${sync.linksCreated} Claude Code discovery link(s).`);
+      }
+      for (const damage of sync.damaged) {
+        console.warn(
+          `[Agent Office] Claude Code discovery bridge: ${damage.resource} ${
+            damage.resourceId ?? damage.agentId
+          } is damaged (${damage.reason}) and was not linked.`,
+        );
+      }
+      for (const skipped of sync.skippedForeignLinks) {
+        console.warn(
+          `[Agent Office] Claude Code discovery bridge left ${skipped} alone — it is not a link this bridge created.`,
+        );
+      }
+      for (const failure of sync.linkFailures) {
+        console.error(
+          `[Agent Office] Claude Code discovery bridge could not create a link at ${failure.path} (${failure.reason}). ` +
+            `${failure.resource} ${failure.resourceId ?? failure.agentId} is not discoverable by Claude Code until this is resolved.`,
+        );
+      }
+      return sync;
+    } catch (error) {
+      console.error('[Agent Office] Claude Code discovery bridge sync failed:', error);
+      return null;
+    }
+  });
 }
 
 /**

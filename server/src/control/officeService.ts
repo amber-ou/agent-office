@@ -63,7 +63,7 @@ import {
 } from '../../../domain/src/index.js';
 import type { AgentFileStore, ReviewNote } from '../../../storage/src/index.js';
 import type { OfficeStorage } from './officeStorage.js';
-import { awaitAgentFileMigration } from './officeStorage.js';
+import { awaitAgentFileMigration, awaitCcBridge, runCcBridgeSync } from './officeStorage.js';
 
 const DEFAULT_DEPS: DomainDeps = { ids: uuidIdGenerator, clock: systemClock };
 
@@ -188,6 +188,43 @@ export class OfficeService {
     return this.storage.agentFiles;
   }
 
+  /**
+   * Brings the Claude Code discovery bridge (CC fields, office.json, the
+   * knowledge index, qualified skill names, the .claude/ links) up to date
+   * for whatever this command just changed.
+   *
+   * The boot-time pass in officeStorage.ts runs exactly once, when this
+   * process's storage first opens — an agent created or edited afterwards
+   * would otherwise never get linked at all. Every command below that writes
+   * to `this.files` awaits this immediately after, so a client that gets a
+   * response back always sees a fully bridged agent, not one that catches up
+   * on some later, unrelated open.
+   *
+   * A bridge failure here never fails the command that triggered it — the
+   * mutation itself already succeeded and must not be undone over a linking
+   * problem — it is only logged, the same as the boot-time pass does.
+   */
+  private async syncAfterFileWrite(): Promise<void> {
+    // The boot-time pass (officeStorage.ts) is fire-and-forget: nothing
+    // otherwise waits for it, so without this it can execute AFTER a
+    // mutation made here, read whatever the mutation (or a test simulating
+    // damage) just wrote, and wrap that in bridge output nobody asked for —
+    // observed as a boot-time sync clobbering a deliberately-conflicted file
+    // that had already been left alone. Awaiting both first guarantees the
+    // boot-time pass has fully settled — including its OWN sync, if this
+    // agent was already migrated when the process opened — before this
+    // mutation's sync ever runs, so there is exactly one sync in flight for
+    // this agent, never two racing in an unpredictable order.
+    await awaitAgentFileMigration();
+    await awaitCcBridge();
+    // Queued behind that (a no-op wait, since both settled above) and every
+    // other mutation's sync (see runCcBridgeSync) — never runs concurrently
+    // with another sync over the same agent's files. Errors are logged
+    // there, not thrown here: the mutation that triggered this already
+    // succeeded and must not be undone over a linking problem.
+    await runCcBridgeSync(this.storage);
+  }
+
   // ── Queries ────────────────────────────────────────────────────
 
   /**
@@ -252,6 +289,7 @@ export class OfficeService {
     // Recorded in the database too: that record, not the marker inside the
     // directory, is what later tells "file-backed" apart from "never moved".
     await this.storage.agentMigrations.markMigrated(agent.id, now);
+    await this.syncAfterFileWrite();
     return agent;
   }
 
@@ -525,6 +563,7 @@ export class OfficeService {
     if (command.systemPrompt !== undefined) {
       await this.files.writeInstructions(agentId, command.systemPrompt);
     }
+    await this.syncAfterFileWrite();
     return this.hydrate(updated);
   }
 
@@ -565,6 +604,7 @@ export class OfficeService {
       },
       { createdAt: skill.createdAt, updatedAt: skill.updatedAt },
     );
+    await this.syncAfterFileWrite();
     return stored.skill;
   }
 
@@ -604,13 +644,19 @@ export class OfficeService {
       },
       { createdAt: existing.skill.createdAt, updatedAt: updated.updatedAt },
     );
+    await this.syncAfterFileWrite();
     return stored.skill;
   }
 
   async deleteSkill(command: DeleteSkillCommand): Promise<boolean> {
     const agentId = asAgentId(command.agentId);
     await this.requireWritableFiles(agentId);
-    return this.files.deleteSkill(agentId, command.skillId);
+    const deleted = await this.files.deleteSkill(agentId, command.skillId);
+    // Note: this only refreshes what still exists. A deleted skill's own
+    // .claude/skills/<qualified-name>/ link is left in place, pointing at a
+    // now-missing directory — the bridge does not remove links yet.
+    await this.syncAfterFileWrite();
+    return deleted;
   }
 
   private async assertSlugFree(
@@ -655,6 +701,7 @@ export class OfficeService {
       { title: item.title, type: item.type, content: command.content, tags: item.tags },
       { createdAt: item.createdAt, updatedAt: item.updatedAt },
     );
+    await this.syncAfterFileWrite(); // rebuilds knowledge/index.md
     return stored.item;
   }
 
@@ -685,13 +732,16 @@ export class OfficeService {
       },
       { createdAt: existing.item.createdAt, updatedAt: updated.updatedAt },
     );
+    await this.syncAfterFileWrite(); // rebuilds knowledge/index.md
     return stored.item;
   }
 
   async deleteAgentKnowledge(command: DeleteAgentKnowledgeCommand): Promise<boolean> {
     const agentId = asAgentId(command.agentId);
     await this.requireWritableFiles(agentId);
-    return this.files.deleteKnowledge(agentId, command.knowledgeId);
+    const deleted = await this.files.deleteKnowledge(agentId, command.knowledgeId);
+    await this.syncAfterFileWrite(); // rebuilds knowledge/index.md without it
+    return deleted;
   }
 
   // ── Project workspace ──────────────────────────────────────────

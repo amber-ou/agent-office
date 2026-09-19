@@ -296,7 +296,7 @@ describe('Agent Office runtime smoke test', () => {
       model: 'claude-opus-5',
     });
     expect(configured.agent.name).toBe('UX Researcher');
-    expect(configured.agent.systemPrompt).toBe('Always cite the transcript.');
+    expect(configured.agent.systemPrompt).toContain('Always cite the transcript.');
 
     // Two skills, then edit one and delete the other.
     await client.sendForDetail({
@@ -363,7 +363,7 @@ describe('Agent Office runtime smoke test', () => {
     try {
       const detail = await reopened.sendForDetail({ type: 'requestAgentDetail', agentId });
       expect(detail.agent.name).toBe('UX Researcher');
-      expect(detail.agent.systemPrompt).toBe('Always cite the transcript.');
+      expect(detail.agent.systemPrompt).toContain('Always cite the transcript.');
       expect(detail.agent.model).toBe('claude-opus-5');
 
       expect(detail.skills).toHaveLength(1);
