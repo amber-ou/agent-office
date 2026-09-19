@@ -21,6 +21,7 @@ import {
   getOfficeStorage,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
+import { writeWindowsConsent } from '../src/control/runMode.js';
 import { getTaskRunner, setTaskRuntime } from '../src/control/taskRunner.js';
 import type { FakeClaude } from './helpers/fakeClaude.js';
 import { fakeClaude } from './helpers/fakeClaude.js';
@@ -119,6 +120,14 @@ beforeEach(() => {
   // A sandboxed run authenticates from the environment; without this the
   // runner refuses to dispatch at all, which is its own test below.
   process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
+  // On win32, TaskRunner.eligible() checks windowsConsent BEFORE anything
+  // sandbox- or credential-related (see runMode.ts): without this, every test
+  // in this file that dispatches a task would refuse with "needs one-time
+  // approval" instead of exercising what it actually means to test. This
+  // writes into THIS TEST'S OWN throwaway dataRoot only — never a real
+  // account's consent file, and the product's own refusal-without-consent
+  // behavior stays intact and covered by runMode.test.ts.
+  writeWindowsConsent(dataRoot, new Date().toISOString());
   setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
 });
 
@@ -429,28 +438,40 @@ describe('task execution', () => {
     });
   });
 
-  it('refuses to dispatch when the sandbox is unavailable', async () => {
-    const office = service();
-    const { projectId, taskId } = await projectWithTask(office);
-    claude.sandboxAvailable = false;
+  // These two refusals only exist on the SANDBOXED branch of decideRunMode
+  // (runMode.ts): on win32, TaskRunner.eligible() hardcodes sandbox.ok=false
+  // and decideRunMode takes the Windows branch first, so neither the sandbox
+  // nor the credential is ever consulted there — consent is the only gate.
+  // Skipped rather than "fixed" on Windows: forcing them through would not
+  // test what their names say, it would test nothing.
+  it.skipIf(process.platform === 'win32')(
+    'refuses to dispatch when the sandbox is unavailable',
+    async () => {
+      const office = service();
+      const { projectId, taskId } = await projectWithTask(office);
+      claude.sandboxAvailable = false;
 
-    // Fail closed: there is no unsandboxed fallback.
-    await expect(runner().run(taskId, projectId)).rejects.toThrow(/sandbox is unavailable/);
-    expect(claude.prompts).toEqual([]);
-    // The task did not move.
-    expect(
-      (await office.projectDetail(projectId))!.tasks.find((t) => t.id === taskId)!.status,
-    ).toBe('todo');
-  });
+      // Fail closed: there is no unsandboxed fallback.
+      await expect(runner().run(taskId, projectId)).rejects.toThrow(/sandbox is unavailable/);
+      expect(claude.prompts).toEqual([]);
+      // The task did not move.
+      expect(
+        (await office.projectDetail(projectId))!.tasks.find((t) => t.id === taskId)!.status,
+      ).toBe('todo');
+    },
+  );
 
-  it('refuses to dispatch without a credential in the environment', async () => {
-    const office = service();
-    const { projectId, taskId } = await projectWithTask(office);
-    delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  it.skipIf(process.platform === 'win32')(
+    'refuses to dispatch without a credential in the environment',
+    async () => {
+      const office = service();
+      const { projectId, taskId } = await projectWithTask(office);
+      delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
 
-    await expect(runner().run(taskId, projectId)).rejects.toThrow(/CLAUDE_CODE_OAUTH_TOKEN/);
-    expect(claude.prompts).toEqual([]);
-  });
+      await expect(runner().run(taskId, projectId)).rejects.toThrow(/CLAUDE_CODE_OAUTH_TOKEN/);
+      expect(claude.prompts).toEqual([]);
+    },
+  );
 
   it('gives each agent and each task its own config and working directory', async () => {
     const office = service();

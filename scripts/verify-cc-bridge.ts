@@ -148,9 +148,14 @@ function checkWorkspaceTests(id: string, title: string, script: string): void {
     return;
   }
   const output = `${result.stdout}${result.stderr}`;
+  // The aggregate counts alone ("1 failed | 635 passed") say THAT something
+  // failed, never WHICH — every individual "FAIL  file > describe > test"
+  // line from vitest's own Failed-Tests section is captured too, so a run
+  // with more than one real failure is never mistaken for the one already
+  // known about.
   const summaryLines = output
     .split('\n')
-    .filter((line) => /^\s*(Test Files|Tests)\s/.test(line))
+    .filter((line) => /^\s*(Test Files|Tests)\s|^\s*FAIL\s+\S/.test(line))
     .map((line) => line.trim());
   const passed = result.status === 0;
   record(
@@ -433,10 +438,17 @@ function summarize(): void {
   );
   process.stdout.write(
     '\nNot covered by this script (no scriptable free check exists): whether the real `claude` CLI\n' +
-      'itself lists this agent/skill. Check manually with the throwaway home this script just used\n' +
-      '(or a fresh one) by running `claude` in it and typing `/list-agents` and `/skills` — both are\n' +
-      'documented as local, no-model-call introspection. Report what you see; do not run a paid\n' +
-      'call (asking Claude to actually use the agent/skill) without confirming with me first.\n',
+      'itself sees this agent/skill. This is a manual, non-scriptable check — checking it is NOT the\n' +
+      'same as "Windows acceptance passed"; the file-simulation and real-packaged-build checks above\n' +
+      'passing is what that means. In a `claude` session opened with the SAME throwaway home this\n' +
+      'script just used (or a fresh one pointed at it), two commands are documented as local,\n' +
+      'no-model-call introspection (docs/en/commands.md, docs/en/skills.md at code.claude.com):\n' +
+      '  /list-agents (also /peers) — lists discoverable agents; needs Claude Code v2.1.224+\n' +
+      '  /skills — opens the skills menu; needs to be confirmed it lists a locally-discovered\n' +
+      '           skill the same way it lists a claude.ai-synced one\n' +
+      'Check `claude --version` first: on an older CLI these commands may not exist at all — do not\n' +
+      'assume they do. Report exactly what you see; do not go on to ask Claude to actually USE the\n' +
+      'agent or skill (a real, paid model call) without confirming with me first.\n',
   );
   process.exitCode = verdict === 'PASS' ? 0 : 1;
 }

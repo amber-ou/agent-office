@@ -27,6 +27,7 @@ vi.mock('os', async () => {
 const { PixelAgentsServer } = await import('../src/server.js');
 const { AgentStateStore } = await import('../src/agentStateStore.js');
 const { closeOfficeStorage, setOfficeDataRoot } = await import('../src/control/officeStorage.js');
+const { writeWindowsConsent } = await import('../src/control/runMode.js');
 const { setTaskRuntime } = await import('../src/control/taskRunner.js');
 const { ClaudeCliRuntime } = await import('../../runtime/src/index.js');
 const { fakeClaude } = await import('./helpers/fakeClaude.js');
@@ -187,6 +188,12 @@ beforeEach(() => {
   tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-runtime-'));
   dataRoot = path.join(tmpBase, '.agent-office');
   setOfficeDataRoot(dataRoot);
+  // On win32, TaskRunner.eligible() refuses without this before anything
+  // else — see taskExecution.test.ts's beforeEach for the full reasoning.
+  // Only the one test in this file that dispatches a task needs it, but
+  // writing it for all of them is harmless: it is read only during a
+  // dispatch attempt.
+  writeWindowsConsent(dataRoot, new Date().toISOString());
 });
 
 afterEach(() => {

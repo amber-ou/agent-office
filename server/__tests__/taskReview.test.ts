@@ -19,6 +19,7 @@ import {
   getOfficeStorage,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
+import { writeWindowsConsent } from '../src/control/runMode.js';
 import { getTaskRunner, setTaskRuntime } from '../src/control/taskRunner.js';
 import type { FakeClaude } from './helpers/fakeClaude.js';
 import { fakeClaude } from './helpers/fakeClaude.js';
@@ -78,6 +79,10 @@ beforeEach(() => {
   // A sandboxed run authenticates from the environment; without this the
   // runner refuses to dispatch at all, which is its own test below.
   process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
+  // See taskExecution.test.ts's beforeEach: on win32 this gate comes before
+  // sandbox/credential checks, so every test here that runs a task needs it.
+  // Scoped to this test's own throwaway dataRoot only.
+  writeWindowsConsent(dataRoot, new Date().toISOString());
   setTaskRuntime(new ClaudeCliRuntime({ spawn: claude.spawn }));
 });
 
