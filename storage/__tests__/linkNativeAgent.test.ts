@@ -129,7 +129,13 @@ describe('parseNativeAgentFile', () => {
 describe('linkNativeAgentFile', () => {
   it('registers a new agent whose only source is the external file', async () => {
     const file = writeNativeFile('reviewer', REVIEWER);
-    const result = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, DEPS);
+    const result = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      file,
+      DEPS,
+      nativeRoot,
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.action).toBe('linked');
@@ -147,7 +153,13 @@ describe('linkNativeAgentFile', () => {
 
   it('re-linking the same path refreshes the same agent instead of creating a second one', async () => {
     const file = writeNativeFile('reviewer', REVIEWER);
-    const first = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, DEPS);
+    const first = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      file,
+      DEPS,
+      nativeRoot,
+    );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
 
@@ -155,7 +167,13 @@ describe('linkNativeAgentFile', () => {
       file,
       REVIEWER.replace('You are a careful, concise code reviewer.', 'You are now terser.'),
     );
-    const second = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, DEPS);
+    const second = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      file,
+      DEPS,
+      nativeRoot,
+    );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.action).toBe('refreshed');
@@ -172,7 +190,13 @@ describe('linkNativeAgentFile', () => {
         '\n',
       ),
     );
-    const result = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, DEPS);
+    const result = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      file,
+      DEPS,
+      nativeRoot,
+    );
     expect(result.ok).toBe(false);
     expect((await storage.repos.agents.list()).length).toBe(0);
   });
@@ -183,14 +207,58 @@ describe('linkNativeAgentFile', () => {
       storage.agentFiles,
       path.join(nativeRoot, 'nope.md'),
       DEPS,
+      nativeRoot,
     );
     expect(result.ok).toBe(false);
     expect((await storage.repos.agents.list()).length).toBe(0);
   });
 
+  it('refuses a file outside the Claude Code agents root, rather than trusting it unverified', async () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-claude-agents-'));
+    try {
+      const file = path.join(elsewhere, 'reviewer.md');
+      fs.writeFileSync(file, REVIEWER);
+      const result = await linkNativeAgentFile(
+        storage.repos,
+        storage.agentFiles,
+        file,
+        DEPS,
+        nativeRoot,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toContain('outside');
+      expect((await storage.repos.agents.list()).length).toBe(0);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a name that collides with another file under the same root, rather than picking one', async () => {
+    writeNativeFile('reviewer-a', REVIEWER);
+    const second = writeNativeFile('reviewer-b', REVIEWER); // same `name: code-reviewer`
+    const result = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      second,
+      DEPS,
+      nativeRoot,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('code-reviewer');
+    expect((await storage.repos.agents.list()).length).toBe(0);
+  });
+
   it('is invisible to the ordinary agent-file migration and the Office→CC discovery bridge', async () => {
     const file = writeNativeFile('reviewer', REVIEWER);
-    const linked = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, DEPS);
+    const linked = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      file,
+      DEPS,
+      nativeRoot,
+    );
     expect(linked.ok).toBe(true);
     if (!linked.ok) return;
 

@@ -18,6 +18,7 @@ import type { AgentDefinition, DomainDeps, Repositories } from '../../../domain/
 import { createAgentDefinition, updateAgentDefinition } from '../../../domain/src/index.js';
 import type { AgentFileStore } from '../agentFiles.js';
 import { toolGrantsFromCcFields } from './ccBridge.js';
+import { verifyNativeAgentDiscoverable } from './nativeAgentDiscovery.js';
 import { parseNativeAgentFile } from './nativeAgentFile.js';
 
 export interface LinkNativeAgentSuccess {
@@ -40,6 +41,7 @@ export async function linkNativeAgentFile(
   files: AgentFileStore,
   filePath: string,
   deps: DomainDeps,
+  claudeAgentsRoot: string,
 ): Promise<LinkNativeAgentResult> {
   const absolute = path.resolve(filePath);
   let text: string;
@@ -58,6 +60,15 @@ export async function linkNativeAgentFile(
   }
   const { fields, body } = parsed.agent;
   const tools = toolGrantsFromCcFields(fields);
+
+  // Refused before any write: a link this session cannot be confident Claude
+  // Code will actually resolve `--agent <name>` to is not registered at all,
+  // rather than registered and left to fail (or silently pick a stranger's
+  // file) at the next dispatch.
+  const discoverable = verifyNativeAgentDiscoverable(absolute, fields.name, claudeAgentsRoot);
+  if (!discoverable.ok) {
+    return { ok: false, reason: discoverable.reason! };
+  }
 
   const existing = await findLinkedAgent(repos, files, absolute);
   const now = deps.clock.now();

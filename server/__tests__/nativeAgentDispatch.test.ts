@@ -20,6 +20,7 @@ import { OfficeService } from '../src/control/officeService.js';
 import {
   closeOfficeStorage,
   getOfficeStorage,
+  setClaudeDiscoveryPaths,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
 import { writeWindowsConsent } from '../src/control/runMode.js';
@@ -88,6 +89,12 @@ beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-native-dispatch-'));
   nativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-agents-native-dispatch-'));
   setOfficeDataRoot(dataRoot);
+  // The same root linkNativeAgentFile is given below, so eligible()'s own
+  // discoverability re-check (taskRunner.ts) agrees with what was linked.
+  setClaudeDiscoveryPaths({
+    claudeAgentsRoot: nativeRoot,
+    claudeSkillsRoot: path.join(nativeRoot, '..', 'skills'),
+  });
   claude = fakeClaude();
   process.env['CLAUDE_CODE_OAUTH_TOKEN'] = 'test-token';
   writeWindowsConsent(dataRoot, new Date().toISOString());
@@ -100,6 +107,7 @@ afterEach(() => {
   setTaskRuntime(undefined);
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
+  setClaudeDiscoveryPaths(undefined);
   fs.rmSync(dataRoot, { recursive: true, force: true });
   fs.rmSync(nativeRoot, { recursive: true, force: true });
 });
@@ -113,10 +121,16 @@ async function nativeAgentProjectWithTask(): Promise<{
   const storage = getOfficeStorage()!;
   const file = path.join(nativeRoot, 'reviewer.md');
   fs.writeFileSync(file, REVIEWER);
-  const linked = await linkNativeAgentFile(storage.repos, storage.agentFiles, file, {
-    ids: (await import('../../domain/src/index.js')).uuidIdGenerator,
-    clock: (await import('../../domain/src/index.js')).systemClock,
-  });
+  const linked = await linkNativeAgentFile(
+    storage.repos,
+    storage.agentFiles,
+    file,
+    {
+      ids: (await import('../../domain/src/index.js')).uuidIdGenerator,
+      clock: (await import('../../domain/src/index.js')).systemClock,
+    },
+    nativeRoot,
+  );
   if (!linked.ok) throw new Error(linked.reason);
 
   const office = service();
@@ -175,6 +189,17 @@ describe('dispatch through a native Claude Code agent', () => {
     const { projectId, taskId } = await nativeAgentProjectWithTask();
 
     await expect(runner().run(taskId, projectId)).rejects.toThrow(/sandboxed run cannot reach/);
+    expect(claude.prompts).toEqual([]);
+  });
+
+  it('refuses to dispatch once a sibling file starts sharing the linked name, rather than guessing', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    const { projectId, taskId } = await nativeAgentProjectWithTask();
+    // A second file created AFTER linking, sharing the same `name:` — the
+    // situation the one-time link could not have caught.
+    fs.writeFileSync(path.join(nativeRoot, 'reviewer-2.md'), REVIEWER);
+
+    await expect(runner().run(taskId, projectId)).rejects.toThrow(/other file/);
     expect(claude.prompts).toEqual([]);
   });
 });

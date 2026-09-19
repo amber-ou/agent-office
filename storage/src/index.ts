@@ -61,6 +61,8 @@ export type {
 export { linkNativeAgentFile } from './files/linkNativeAgent.js';
 export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
 export { migrateAgentFiles } from './files/migrateAgentFiles.js';
+export type { NativeAgentDiscoverability } from './files/nativeAgentDiscovery.js';
+export { verifyNativeAgentDiscoverable } from './files/nativeAgentDiscovery.js';
 export type {
   NativeAgentFields,
   NativeAgentParseError,

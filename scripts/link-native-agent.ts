@@ -38,11 +38,15 @@ async function main(): Promise<void> {
   const filePath = expandHome(arg!);
 
   const storage = openSqliteStorage();
+  const claudeAgentsRoot = path.join(os.homedir(), '.claude', 'agents');
   try {
-    const result = await linkNativeAgentFile(storage.repos, storage.agentFiles, filePath, {
-      ids: uuidIdGenerator,
-      clock: systemClock,
-    });
+    const result = await linkNativeAgentFile(
+      storage.repos,
+      storage.agentFiles,
+      filePath,
+      { ids: uuidIdGenerator, clock: systemClock },
+      claudeAgentsRoot,
+    );
     if (!result.ok) {
       console.error(`Not linked: ${result.reason}`);
       process.exit(1);
@@ -52,9 +56,17 @@ async function main(): Promise<void> {
         `(agent id ${result.agent.id}) from ${path.resolve(filePath)}`,
     );
     console.log(
+      `Confirmed: this is the only file under ${claudeAgentsRoot} named "${result.agent.name}", ` +
+        'so claude --agent will resolve to it unambiguously.',
+    );
+    console.log(
       result.action === 'linked'
-        ? 'Open Office and add this agent to a project to give it a task.'
-        : "Office's copy of this agent's name/description/instructions/tools/model is refreshed from the file.",
+        ? 'Open Office and add this agent to a project to give it a task. Everyday edits to the ' +
+            'file in Claude Code need no re-link: dispatch always reads it fresh. Re-run this ' +
+            "command only if you want Office's own agent list to show the current name/" +
+            'description, or to point this agent at a different file.'
+        : "Office's displayed name/description/instructions/tools/model are refreshed from the " +
+            'file. (Task dispatch never needed this: it already reads the file fresh every time.)',
     );
   } finally {
     storage.close();

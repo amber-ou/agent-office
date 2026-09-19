@@ -55,7 +55,7 @@ import {
   resolveBindPath,
 } from '../../../runtime/src/index.js';
 import type { ReviewNote } from '../../../storage/src/index.js';
-import { parseNativeAgentFile } from '../../../storage/src/index.js';
+import { parseNativeAgentFile, verifyNativeAgentDiscoverable } from '../../../storage/src/index.js';
 import { assembleContext } from './contextAssembly.js';
 import type { OfficeStorage } from './officeStorage.js';
 import type { RunMode } from './runMode.js';
@@ -316,6 +316,18 @@ export class TaskRunner extends EventEmitter {
     const parsed = parseNativeAgentFile(nativeText);
     if (!parsed.ok) {
       throw new Error(`agent "${agent.name}"'s native file ${nativeAgentPath}: ${parsed.reason}`);
+    }
+    // Same check `link-native-agent` runs up front, repeated here because the
+    // file — or a sibling that now shares its name — can have changed since
+    // the last link: a stale "yes, --agent will find it" is worse than
+    // re-proving it on every dispatch.
+    const discoverable = verifyNativeAgentDiscoverable(
+      nativeAgentPath,
+      parsed.agent.fields.name,
+      this.storage.ccDiscoveryPaths.claudeAgentsRoot,
+    );
+    if (!discoverable.ok) {
+      throw new Error(`agent "${agent.name}": ${discoverable.reason}`);
     }
     return {
       task,
