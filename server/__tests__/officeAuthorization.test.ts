@@ -86,7 +86,9 @@ describe('office control-plane authorization', () => {
     expect(replies.filter((r) => r['type'] === 'officeError')).not.toHaveLength(0);
 
     // And the write attempts did not land.
-    expect((await office.agentDetail(agent.id))!.agent.systemPrompt).toBe('SECRET INSTRUCTIONS');
+    expect((await office.agentDetail(agent.id))!.agent.systemPrompt).toContain(
+      'SECRET INSTRUCTIONS',
+    );
     expect((await office.agentDetail(agent.id))!.skills).toEqual([]);
   });
 

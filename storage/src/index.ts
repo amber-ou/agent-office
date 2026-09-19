@@ -30,6 +30,8 @@ export {
   ccFieldsFromToolGrants,
   ccIdentifierFor,
   hasConflictMarkers,
+  hasKnowledgePointer,
+  knowledgePointerBlock,
   officeMetaFromAgent,
   qualifiedSkillName,
   toolGrantsFromCcFields,
@@ -38,6 +40,7 @@ export {
 export type {
   AgentDiscoveryPaths,
   CcBridgeDamage,
+  CcBridgeLinkFailure,
   CcBridgeSyncReport,
 } from './files/ccBridgeSync.js';
 export { syncCcBridge } from './files/ccBridgeSync.js';

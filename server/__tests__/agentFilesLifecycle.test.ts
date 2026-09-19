@@ -206,7 +206,7 @@ describe('agent files after migration, over the real path', () => {
       agentId: legacy.agentId,
       systemPrompt: 'EDITED INSTRUCTIONS',
     });
-    expect(detail.agent.systemPrompt).toBe('EDITED INSTRUCTIONS');
+    expect(detail.agent.systemPrompt).toContain('EDITED INSTRUCTIONS');
 
     // ── Add things that exist only as files ──
     detail = await client.detail({
@@ -251,7 +251,7 @@ describe('agent files after migration, over the real path', () => {
     // come back over them.
     expect(detail.fileBacked).toBe(true);
     expect(detail.configIssue).toBeUndefined();
-    expect(detail.agent.systemPrompt).toBe('EDITED INSTRUCTIONS');
+    expect(detail.agent.systemPrompt).toContain('EDITED INSTRUCTIONS');
     expect(detail.skills.map((s) => s.slug)).toEqual(['synthesis']);
     expect(detail.skills[0]!.content).toBe('FILE-ONLY SKILL');
     expect(detail.knowledge.map((k) => k.title)).toEqual(['File-only note']);
@@ -327,7 +327,7 @@ describe('agent files after migration, over the real path', () => {
     expect(detail.fileBacked).toBe(true);
     expect(detail.configIssue).toBeUndefined();
     // Edited, added and deleted state all came back as they were.
-    expect(detail.agent.systemPrompt).toBe('EDITED INSTRUCTIONS');
+    expect(detail.agent.systemPrompt).toContain('EDITED INSTRUCTIONS');
     expect(detail.skills.map((s) => s.slug)).toEqual(['synthesis']);
     expect(detail.knowledge.map((k) => k.title)).toEqual(['Interview guide']);
     stopServer(client);

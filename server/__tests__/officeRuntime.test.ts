@@ -438,7 +438,7 @@ describe('Agent Office runtime smoke test', () => {
     try {
       const detail = await reopened.sendForDetail({ type: 'requestAgentDetail', agentId });
       expect(detail.agent.name).toBe('Research Agent');
-      expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+      expect(detail.agent.systemPrompt).toContain('Cite the transcript.');
       expect(detail.skills[0]!.content).toBe('Ask open questions.');
       expect(detail.knowledge[0]!.content).toBe('Start with context questions.');
       expect(fs.existsSync(path.join(agentDir, 'discovery', 'agent.md'))).toBe(true);

@@ -105,6 +105,38 @@ export function toolGrantsFromCcFields(
   ];
 }
 
+const KNOWLEDGE_POINTER_MARKER = '<!-- agent-office:knowledge-pointer -->';
+
+/**
+ * The block appended to an agent's instructions telling it where its
+ * knowledge lives. This is the ONLY mechanism that connects `knowledge/
+ * index.md` to the agent — nothing loads knowledge automatically, so an
+ * agent that never reads this paragraph never reads its knowledge either.
+ * Deliberately home-relative (`~/...`), not a machine-specific absolute
+ * path, so the same instructions body stays correct after this agent's
+ * files are cloned onto a different computer with a different home
+ * directory.
+ */
+export function knowledgePointerBlock(agentId: string): string {
+  return [
+    KNOWLEDGE_POINTER_MARKER,
+    '',
+    '## Your knowledge',
+    '',
+    `You have a personal knowledge base at \`~/.agent-office/agents/${agentId}/knowledge/\` ` +
+      "(`~` is your home directory on THIS computer — resolve it yourself, e.g. via Bash's " +
+      '`$HOME`, since it is not expanded automatically here). Read `index.md` there first for ' +
+      'what exists, then read only the file(s) relevant to your current task with the Read ' +
+      'tool. Nothing loads this for you automatically.',
+  ].join('\n');
+}
+
+/** True once `knowledgePointerBlock` has already been appended, so the
+ *  bridge never appends it twice. */
+export function hasKnowledgePointer(body: string): boolean {
+  return body.includes(KNOWLEDGE_POINTER_MARKER);
+}
+
 /** Office-only fields, straight off the domain object. Never includes
  *  name/description/tools/model — those belong solely to `AgentCcFields`. */
 export function officeMetaFromAgent(agent: AgentDefinition): OfficeAgentMeta {

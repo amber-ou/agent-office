@@ -160,6 +160,79 @@ describe('discovery/agent.md is the single source for instructions and CC fields
       'Edited by a human through Claude Code.',
     );
   });
+
+  it('survives an ATOMIC-RENAME edit made through the CC-side junction itself', async () => {
+    // This is the scenario the whole symlink-over-hardlink decision rests
+    // on: many editors (and Office's own writeAtomic) save by writing a temp
+    // file and renaming it over the target, which repoints the PATH to a new
+    // inode. A hardlink from `.claude/agents/` would go stale here; a
+    // directory link survives because it resolves the path fresh every time.
+    const agentId = await agentWithSkill();
+    const paths = discoveryPaths();
+    await syncCcBridge(storage.repos, storage.agentFiles, storage.agentMigrations, paths, NOW);
+
+    const ccSidePath = path.join(paths.claudeAgentsRoot, agentId, 'agent.md');
+    expect(fs.existsSync(ccSidePath)).toBe(true); // resolves through the junction
+    const tmp = `${ccSidePath}.tmp`;
+    fs.writeFileSync(tmp, '---\nname: "x"\ndescription: "edited via CC"\n---\n\nRewritten body.');
+    fs.renameSync(tmp, ccSidePath); // atomic rename, through the junction
+
+    expect(await storage.agentFiles.readInstructions(agentId)).toBe('Rewritten body.');
+    const cc = await storage.agentFiles.readCcFields(agentId);
+    expect(cc?.description).toBe('edited via CC');
+  });
+});
+
+describe('the knowledge pointer', () => {
+  it('is appended to instructions so the agent knows to look, and only once', async () => {
+    const agentId = await agentWithSkill();
+    const paths = discoveryPaths();
+    await syncCcBridge(storage.repos, storage.agentFiles, storage.agentMigrations, paths, NOW);
+
+    const first = (await storage.agentFiles.readInstructions(agentId))!;
+    expect(first).toContain('Cite the transcript.'); // original instructions kept
+    expect(first).toContain(`.agent-office/agents/${agentId}/knowledge/`);
+    expect(first).toContain('index.md');
+    // `$HOME` is the RESOLUTION HINT, not a baked-in path; no actual absolute
+    // path for this machine appears anywhere in the text.
+    expect(first).not.toMatch(/C:\\|\/home\/|\/Users\//);
+
+    await syncCcBridge(storage.repos, storage.agentFiles, storage.agentMigrations, paths, NOW);
+    const second = (await storage.agentFiles.readInstructions(agentId))!;
+    expect(second).toBe(first); // idempotent: not appended twice
+  });
+});
+
+describe('a junction failure is reported per resource, not fatal to the whole run', () => {
+  it('reports one agent link failure and still syncs the next agent', async () => {
+    const oneId = await agentWithSkill('One', 'ux');
+    const twoId = await agentWithSkill('Two', 'research');
+    const paths = discoveryPaths();
+
+    // Make the whole agents root unusable as a directory: a FILE sits where
+    // it needs to go, so mkdirSync(recursive) over it throws rather than
+    // silently succeeding — a stand-in for a real permission refusal.
+    fs.mkdirSync(path.dirname(paths.claudeAgentsRoot), { recursive: true });
+    fs.writeFileSync(paths.claudeAgentsRoot, 'blocking file', 'utf8');
+
+    const report = await syncCcBridge(
+      storage.repos,
+      storage.agentFiles,
+      storage.agentMigrations,
+      paths,
+      NOW,
+    );
+
+    // Both agents' link paths sit under the same blocked root, so both link
+    // attempts fail — the point is that the FIRST failure does not abort the
+    // loop: content sync still completes, and both failures are reported
+    // individually rather than one thrown exception swallowing the rest.
+    expect(report.linkFailures.map((f) => f.agentId).sort()).toEqual([oneId, twoId].sort());
+    expect(report.synced.sort()).toEqual([oneId, twoId].sort());
+    // Content that has nothing to do with the blocked link still landed.
+    expect(await storage.agentFiles.readOfficeMeta(oneId)).not.toBeNull();
+    expect(await storage.agentFiles.readOfficeMeta(twoId)).not.toBeNull();
+  });
 });
 
 describe('office.json holds only Office-exclusive fields', () => {

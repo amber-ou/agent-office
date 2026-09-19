@@ -247,6 +247,12 @@ async function runCcBridge(storage: SqliteStorage): Promise<CcBridgeRunResult | 
         `[Agent Office] Claude Code discovery bridge left ${skipped} alone — it is not a link this bridge created.`,
       );
     }
+    for (const failure of sync.linkFailures) {
+      console.error(
+        `[Agent Office] Claude Code discovery bridge could not create a link at ${failure.path} (${failure.reason}). ` +
+          `${failure.resource} ${failure.resourceId ?? failure.agentId} is not discoverable by Claude Code until this is resolved.`,
+      );
+    }
 
     return { imported, backfill, sync };
   } catch (error) {

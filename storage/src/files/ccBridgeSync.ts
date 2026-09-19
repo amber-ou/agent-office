@@ -19,11 +19,13 @@ import type { AgentMigrationStore } from '../sqlite/agentMigrations.js';
 import {
   ccFieldsFromAgent,
   ccIdentifierFor,
+  hasKnowledgePointer,
+  knowledgePointerBlock,
   officeMetaFromAgent,
   qualifiedSkillName,
   validateBridgeFile,
 } from './ccBridge.js';
-import { ensureDirectoryLink } from './discoveryLinks.js';
+import { ensureDirectoryLink, type LinkOutcome } from './discoveryLinks.js';
 
 export interface AgentDiscoveryPaths {
   /** Usually `~/.claude/agents`. */
@@ -39,11 +41,23 @@ export interface CcBridgeDamage {
   reason: string;
 }
 
+export interface CcBridgeLinkFailure {
+  agentId: AgentId;
+  resource: 'agent' | 'skill';
+  resourceId?: string;
+  path: string;
+  reason: string;
+}
+
 export interface CcBridgeSyncReport {
   synced: AgentId[];
   damaged: CcBridgeDamage[];
   linksCreated: number;
   skippedForeignLinks: string[];
+  /** A junction/symlink Node itself refused to create (e.g. a permission
+   *  error) — reported by resource, never silently dropped, and never lets
+   *  one agent's failure stop the rest of the loop from running. */
+  linkFailures: CcBridgeLinkFailure[];
 }
 
 export async function syncCcBridge(
@@ -58,6 +72,7 @@ export async function syncCcBridge(
     damaged: [],
     linksCreated: 0,
     skippedForeignLinks: [],
+    linkFailures: [],
   };
 
   for (const agent of await repos.agents.list()) {
@@ -91,10 +106,24 @@ export async function syncCcBridge(
     await files.writeOfficeMeta(agent.id, officeMetaFromAgent(agent));
     await files.rebuildKnowledgeIndex(agent.id);
 
+    // Knowledge only ever gets read if something tells the agent to look —
+    // append that pointer once, into the same single-source body CC edits.
+    const body = await files.readInstructions(agent.id);
+    if (body !== null && !hasKnowledgePointer(body)) {
+      await files.writeInstructions(agent.id, `${body}\n\n${knowledgePointerBlock(agent.id)}\n`);
+    }
+
     const discoveryDir = path.join(files.root, agent.id, 'discovery');
     const agentLink = path.join(paths.claudeAgentsRoot, agent.id);
-    const agentOutcome = ensureDirectoryLink(agentLink, discoveryDir);
-    if (agentOutcome.skippedForeign) {
+    const agentOutcome = tryEnsureLink(agentLink, discoveryDir);
+    if ('failed' in agentOutcome) {
+      report.linkFailures.push({
+        agentId: agent.id,
+        resource: 'agent',
+        path: agentLink,
+        reason: agentOutcome.reason,
+      });
+    } else if (agentOutcome.skippedForeign) {
       report.skippedForeignLinks.push(agentLink);
     } else if (agentOutcome.created) {
       report.linksCreated++;
@@ -140,8 +169,16 @@ export async function syncCcBridge(
 
       const skillDir = path.join(files.root, agent.id, 'skills', skill.id);
       const skillLink = path.join(paths.claudeSkillsRoot, qualified);
-      const skillOutcome = ensureDirectoryLink(skillLink, skillDir);
-      if (skillOutcome.skippedForeign) {
+      const skillOutcome = tryEnsureLink(skillLink, skillDir);
+      if ('failed' in skillOutcome) {
+        report.linkFailures.push({
+          agentId: agent.id,
+          resource: 'skill',
+          resourceId: skill.id,
+          path: skillLink,
+          reason: skillOutcome.reason,
+        });
+      } else if (skillOutcome.skippedForeign) {
         report.skippedForeignLinks.push(skillLink);
       } else if (skillOutcome.created) {
         report.linksCreated++;
@@ -152,6 +189,24 @@ export async function syncCcBridge(
   }
 
   return report;
+}
+
+/**
+ * `ensureDirectoryLink` can throw — a real OS-level refusal (e.g. a
+ * permission error creating a junction without the right privilege on
+ * Windows), not something to guess at. Catching it HERE, per link, is what
+ * keeps one agent's or one skill's failure from aborting every other
+ * agent's sync in the same run.
+ */
+function tryEnsureLink(
+  linkPath: string,
+  targetDir: string,
+): LinkOutcome | { failed: true; reason: string } {
+  try {
+    return ensureDirectoryLink(linkPath, targetDir);
+  } catch (error) {
+    return { failed: true, reason: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function readIfPresent(file: string): string | null {

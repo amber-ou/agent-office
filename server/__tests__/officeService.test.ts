@@ -387,7 +387,7 @@ describe('OfficeService', () => {
     // And that is what the office reads back, after a restart.
     const detail = (await reopen().agentDetail(agent.id))!;
     expect(detail.fileBacked).toBe(true);
-    expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+    expect(detail.agent.systemPrompt).toContain('Cite the transcript.');
     expect(detail.skills[0]!.slug).toBe('interview');
     expect(detail.knowledge[0]!.content).toBe('Start with context questions.');
   });
@@ -500,7 +500,7 @@ describe('OfficeService', () => {
     // Blocked: it reads the database and says so, and both copies survive.
     expect(detail.fileBacked).toBe(false);
     expect(detail.configIssue).toMatch(/disagree/i);
-    expect(detail.agent.systemPrompt).toBe('Cite the transcript.');
+    expect(detail.agent.systemPrompt).toContain('Cite the transcript.');
     expect(
       fs.readFileSync(path.join(dataRoot, 'agents', agent.id, 'discovery', 'agent.md'), 'utf8'),
     ).toBe('HAND-EDITED');
