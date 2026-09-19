@@ -88,16 +88,66 @@ function checkBuild(): string | null {
 
 // ── 2 & 3. File-simulation tier: this checkout's own test suites ──
 
-/** npm on Windows is npm.cmd; on POSIX it's just npm. Same call either way. */
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/**
+ * `npm.cmd`/`npm` on Windows is a shell wrapper (.cmd), and Node's
+ * `spawnSync` refuses to launch a `.cmd` file without `shell: true` — that
+ * refusal is silent unless you check `result.error`, which the previous
+ * version of this script never did (observed on Windows: status `null`, no
+ * output). The reliable fix is to skip the wrapper: Node installers bundle
+ * npm's own JS entry point next to `node.exe`, so running that directly
+ * through `process.execPath` needs no shell at all. Fall back to the shell
+ * wrapper, explicitly with `shell: true`, only if that bundled file is not
+ * where expected (a different install layout).
+ */
+function findBundledNpmCli(): string | null {
+  const candidate = path.join(
+    path.dirname(process.execPath),
+    'node_modules',
+    'npm',
+    'bin',
+    'npm-cli.js',
+  );
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+interface NpmRunResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+}
+
+function runNpmScript(script: string, cwd: string): NpmRunResult {
+  const bundledNpmCli = findBundledNpmCli();
+  const result = bundledNpmCli
+    ? spawnSync(process.execPath, [bundledNpmCli, 'run', script], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+      })
+    : spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        shell: true,
+      });
+  return {
+    status: result.status,
+    signal: result.signal,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    error: result.error,
+  };
+}
 
 function checkWorkspaceTests(id: string, title: string, script: string): void {
-  const result = spawnSync(NPM, ['run', script], {
-    cwd: REPO,
-    encoding: 'utf8',
-    env: process.env,
-  });
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  const result = runNpmScript(script, REPO);
+  if (result.error) {
+    record(id, title, 'FAIL', `could not launch npm: ${result.error.message}`);
+    return;
+  }
+  const output = `${result.stdout}${result.stderr}`;
   const summaryLines = output
     .split('\n')
     .filter((line) => /^\s*(Test Files|Tests)\s/.test(line))
@@ -109,7 +159,7 @@ function checkWorkspaceTests(id: string, title: string, script: string): void {
     passed ? 'PASS' : 'FAIL',
     summaryLines.length > 0
       ? summaryLines.join('\n')
-      : `exit code ${result.status}; last output:\n${output.trim().slice(-1200)}`,
+      : `status=${result.status ?? 'null'} signal=${result.signal ?? 'none'}; last output:\n${output.trim().slice(-1200)}`,
   );
 }
 
@@ -180,6 +230,31 @@ async function collect(
   await new Promise((resolve) => setTimeout(resolve, 750));
   socket.close();
   return received;
+}
+
+/**
+ * Stops the ONE child process this script spawned — addressed by its own
+ * handle/PID, never by name, and never anything but that one process. Sends
+ * SIGINT first (the one signal Node reliably emulates on Windows, and what
+ * cli.ts's own shutdown handler listens for) and waits for it to actually
+ * exit before returning, so its SQLite file handles are released before the
+ * caller tries to remove the temp directory they live in. Falls back to a
+ * plain kill of that same PID only if it does not exit in time.
+ */
+async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return; // already exited
+  }
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  child.kill('SIGINT');
+  const exitedInTime = await Promise.race([
+    exited.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+  ]);
+  if (!exitedInTime) {
+    child.kill(); // same PID, no signal — a harder stop, still this process only
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+  }
 }
 
 /** Poll the filesystem instead of guessing a fixed delay: the CC bridge runs
@@ -328,7 +403,7 @@ async function checkCcBridgeEndToEnd(cli: string): Promise<void> {
       `index exists=${fs.existsSync(knowledgeIndex)}, agent.md has pointer=${hasPointer}`,
     );
   } finally {
-    child.kill();
+    await stopChild(child);
   }
 }
 
@@ -366,29 +441,85 @@ function summarize(): void {
   process.exitCode = verdict === 'PASS' ? 0 : 1;
 }
 
+const TMP_PREFIX = path.join(os.tmpdir(), 'agent-office-cc-bridge-');
+
+/**
+ * Removes `tmpRoot`, with a bounded number of retries — on Windows, a file
+ * the just-stopped child held open can stay locked for a moment after the
+ * process itself has exited (AV scanning, a deferred file-system callback).
+ * Refuses to touch anything outside what THIS run created, and never lets a
+ * removal failure escape uncaught: a FAIL check is recorded instead, so
+ * `summarize()` below always still runs and still prints a full summary with
+ * a non-zero exit code.
+ */
+async function cleanupTmpRoot(): Promise<void> {
+  if (!tmpRoot) {
+    return;
+  }
+  if (!tmpRoot.startsWith(TMP_PREFIX)) {
+    record(
+      'cleanup',
+      'Temporary directory removed',
+      'FAIL',
+      `refusing to delete a path this run did not create: ${tmpRoot}`,
+    );
+    return;
+  }
+  const attempts = 5;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === attempts) {
+        record(
+          'cleanup',
+          'Temporary directory removed',
+          'FAIL',
+          `${tmpRoot} could not be removed after ${attempts} attempts (${
+            error instanceof Error ? error.message : String(error)
+          }) — remove it by hand`,
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-cc-bridge-'));
+  tmpRoot = fs.mkdtempSync(TMP_PREFIX);
   process.stdout.write('Agent Office — Claude Code discovery bridge acceptance (no API calls)\n\n');
   try {
-    const cli = checkBuild();
-    checkWorkspaceTests('test-storage', 'storage test suite (file simulation)', 'test:storage');
-    checkWorkspaceTests('test-server', 'server test suite (file simulation)', 'test:server');
-    if (cli) {
-      await checkCcBridgeEndToEnd(cli);
-    } else {
-      for (const id of [
-        'cc-bridge-start',
-        'cc-bridge-agent',
-        'cc-bridge-link',
-        'cc-bridge-scope',
-        'cc-bridge-fields',
-        'cc-bridge-knowledge',
-      ]) {
-        record(id, id, 'SKIP', 'dist/cli.js is missing, see the build check above');
+    try {
+      const cli = checkBuild();
+      checkWorkspaceTests('test-storage', 'storage test suite (file simulation)', 'test:storage');
+      checkWorkspaceTests('test-server', 'server test suite (file simulation)', 'test:server');
+      if (cli) {
+        await checkCcBridgeEndToEnd(cli);
+      } else {
+        for (const id of [
+          'cc-bridge-start',
+          'cc-bridge-agent',
+          'cc-bridge-link',
+          'cc-bridge-scope',
+          'cc-bridge-fields',
+          'cc-bridge-knowledge',
+        ]) {
+          record(id, id, 'SKIP', 'dist/cli.js is missing, see the build check above');
+        }
       }
+    } catch (error) {
+      // Whatever this was, it must not skip cleanup or the summary below.
+      record(
+        'unexpected',
+        'The acceptance run itself',
+        'FAIL',
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+      );
     }
   } finally {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await cleanupTmpRoot();
   }
   summarize();
 }
