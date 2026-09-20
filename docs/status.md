@@ -1,173 +1,232 @@
-# Agent Office — 進度與待辦
+# Agent Office — 進度與下一步
 
-最後更新：2026-09-20 ｜ 基準 commit：`e377594` ｜ 分支：`v1.0`
+更新日期：2026-09-20 ｜ 分支 `v1.0` ｜ 開發端最後 commit `e377594`
+Windows 使用者：Amber ｜ 儲存庫：`amber-ou/agent-office`
 
-Agent Office 是控制平面（Control Plane），Claude Code 是執行環境（Runtime）。
-本文件記錄目前已完成、已知限制，以及尚未完成的事項。
+## 0. 證據界線
 
----
-
-## 1. 完成狀態總覽
-
-| 里程碑               | 內容                                              | Commit    | 狀態       |
-| -------------------- | ------------------------------------------------- | --------- | ---------- |
-| M0 稽核              | Repository 稽核                                   | `fc585db` | 已凍結     |
-| M1 領域模型          | Domain model（provider／storage／UI 獨立）        | `322dda8` | 已凍結     |
-| M2 本機持久化        | SQLite + BlobStore                                | `03324ca` | 已凍結     |
-| M3 P1 垂直切片       | Project／Agent／Task 可持久化                     | `be60a41` | 已凍結     |
-| M3 P2 Agent 設定     | Instructions／Skills／AgentKnowledge              | `a7f4e4a` | 已凍結     |
-| M3 P3 Project 工作區 | Project context／ProjectKnowledge／Task workspace | `339cf38` | 已凍結     |
-| M4 P1 執行橋接       | Task → Context → Claude Code → Session → Output   | `4b077b1` | 已凍結     |
-| M4 P2 人工審查       | Review → Accept ／ Request changes → 續跑         | `a894847` | 已凍結     |
-| M5 P1 Agent 檔案化   | Agent 私有檔案 + 安全遷移                         | `f06f77e` | 已凍結     |
-| M5 P1.1 生命週期安全 | 遷移後修改／刪除／重啟／還原                      | `9ed0545` | 已凍結     |
-| M5 P1.1b 執行隔離    | bubblewrap 沙箱 + control plane 授權              | `cb54945` | 已接受     |
-| WSL2 驗收工具        | `npm run verify:wsl2`                             | `b71f7af` | 已接受     |
-| Windows 單人版       | 原生啟動入口 + 一次性風險同意                     | `510632c` | **待驗收** |
-| Claude Code 發現橋接 | Office ⇄ CC 原生 subagent 互通                    | `e377594` | **待驗收** |
+- **已實作**＝開發端程式與測試完成，**不等於**在使用者 Windows 實跑過。
+- **Windows 已驗證**＝使用者實際輸出或畫面能支持的項目。
+- Linux 測試通過、mock 參數測試、檔案橋接測試，**都不等於**真實 Claude Agent
+  派工成功。
+- 本文的「程式行為」敘述已對照 `e377594` 的原始碼確認（下方標註 ✓ 者）。
 
 ---
 
-## 2. 已實作的能力
+## 1. 產品決策（現行）
 
-### 管理（Office）
-
-- **Agent 全域獨立**：不隸屬任何 Project，可跨 Project 使用；建立／編輯 Agent、Instructions、Skills、AgentKnowledge。
-- **Project 工作區**：Project context／settings、ProjectKnowledge（CRUD）、成員管理。
-- **Task**：建立／編輯／刪除、指派與取消指派、狀態流轉、相依關係（含自我相依、跨專案、循環的拒絕）、inputs／references、可先建立後指派。
-- **關閉重開資料保留**：所有上述資料在重啟後完整保留（已由真實 WebSocket + SQLite 重啟測試覆蓋）。
-
-### 執行（Runtime）
-
-- **Run**：Task → 確定性 context 組裝 → Claude Code（`claude -p --output-format json`）→ AgentSession → Output → `review`。
-- **Review**：`Accept`（→ `done`，不呼叫 Claude）或 `Request changes`（需非空 feedback）。
-- **Revision**：以 `claude -p --resume` 續用同一個 Claude session，只送 feedback；每次成功產生**新的** Output，不覆蓋舊的；feedback 進 Task 歷史。
-- **改派 Agent**：不繼承前一個 Agent 的 session，另開新 session。
-- 一次只跑一個 Task（V1 限制，刻意保留）。
-
-### Claude Code 發現橋接（`e8cc9ca`…`e377594`）
-
-> 此段由另一個 session 實作，我未逐行重新稽核；內容依 commit 訊息與各模組
-> 檔頭說明整理，細節以程式與其測試為準（`storage/__tests__/ccBridge.test.ts`、
-> `linkNativeAgent.test.ts`）。
-
-- **Office → CC**：已檔案化的 Agent 會產生 `discovery/agent.md`（含 front
-  matter）、`office.json` 與 knowledge 索引，讓 Claude Code 能直接找到該
-  Agent；每次異動即同步，不是只在啟動時做一次。
-- **CC → Office**：可把 Claude Code 既有的原生 subagent 檔案登記成 Office
-  Agent，派工時以 `--agent` 指定。CC 的檔案是**唯一來源**，Office 不回寫、
-  不複製其內容，也不將其轉為 file-backed。重複登記同一路徑是「重新讀取」而非
-  再建一個 Agent。
-- **安全檢查**：檔案含未解決的 git conflict marker 或 Claude Code 無法唯一
-  定位時，拒絕登記與派工，而非猜測。
-- 個別資源連結失敗會被隔離，不會拖垮整個同步。
-
-### 資料邊界
-
-- Project／Task／Output／review feedback **永不**自動變成 Agent 永久知識；沒有任何一條程式路徑會做這件事。
-- Agent 私有資料（Instructions／Skills／AgentKnowledge）以**不可變 ID** 為路徑鍵，存在各自目錄；改名不搬檔。
-- 所有 agent-scoped API 一律帶 owner `agentId`，借用他人 resource ID 找不到東西；非 canonical UUID 的路徑一律拒絕。
-
-### 隔離與授權
-
-- **Office control plane 需授權**：所有讀寫訊息與 ready handshake 都要 server token；未授權連線只拿到 `officeError`。
-- **Linux／WSL2**：每次 run 在 bubblewrap namespace 內執行（`agents/`、`~/.pixel-agents`、`~/.claude`、`/mnt`、`/init`、`/run/WSL` 皆不掛載），沙箱不可用即**拒絕派工**，無靜默降級。
-- **Windows**：無等價 namespace，改為**一次性明確同意**（記錄當時風險全文），未同意前拒絕派工。
-- Claude 自身 file-tool deny rules 保留為第二層（非 sandbox）。
-
-### 資料與備份
+**Claude Code 原生 Agent 檔案是唯一權威來源；Agent Office 是登錄、管理與派工介面。**
 
 ```
-~/.agent-office/
-  agent-office.db   Projects / Tasks / Sessions / Outputs / Review notes / 遷移狀態
-  agents/           每個 Agent 的 instructions.md、skills/、knowledge/
-  blobs/            ProjectKnowledge 與 Output 內容
-  runtime/          每 Agent 每 Task 的 config/ 與 work/（暫存，不需備份）
+CC 建立／維護原生 Agent → Office 登錄來源關聯 → Office 指派任務
+→ Claude 以指定 Agent 執行 → Office 保存結果
 ```
 
-備份＝停止 Office 後，把 `agent-office.db`、`blobs/`、`agents/` **三者一起**複製。
-詳見 [backup-and-restore.md](backup-and-restore.md)。
+1. 不要求在 Office 再填一份 System Prompt／Instructions。
+2. 不建立第二份需同步維護的 Agent 定義。
+3. CC 改原始檔後，下一次派工即讀到更新，不需重新 link。
+4. 派工須實際使用指定的 CC Agent；複製原始檔文字進一般 prompt 不算等價。
+5. Office 自行保存 Project／Task／Session／Output／Review，不自動轉成 Agent 永久知識。
+6. 最終需本機檔案 ＋ GitHub 私有庫同步，供多台電腦複用。
+7. 私有 Agent 儲存庫預定名稱 `agent-office-agents`；Knowledge 一併同步，
+   認證／token／transcript／SQLite／runtime **不**納入。
+
+## 2. 近期目標與門檻分級
+
+**目標：一個 CC 原生 Agent，在 Windows Office 登錄後重啟仍在，並完成一次簡單任務。**
+
+| 門檻               | 條件                                               | 現況       |
+| ------------------ | -------------------------------------------------- | ---------- |
+| 可以建立 Agent     | 在 CC 建立原生檔案                                 | 現在即可   |
+| 可以放進 Office    | 本機已更新並建置登錄功能，且登錄成功               | 待做       |
+| 可以開始小規模使用 | 完成一次真實任務，指定 Agent 執行、可查看及 Accept | 待做       |
+| 完整驗收通過       | —                                                  | **未達成** |
+
+第一個 Agent 只要名稱、用途與必要工作指示。Skills 與大型 Knowledge 不列入第一輪門檻。
 
 ---
 
-## 3. 測試現況
+## 3. 原生 CC Agent 登錄與派工（`99f8335`、`e377594`）
 
-| 類型                                                   | 結果                                |
-| ------------------------------------------------------ | ----------------------------------- |
-| 全套 `npm test`                                        | 646 passed ／ 1 failed ／ 1 skipped |
-| `npm run verify:wsl2`（本開發 Linux）                  | 12 pass ／ 0 fail ／ 2 skip         |
-| check-types／lint／format／build／knip／asyncapi drift | 全部乾淨                            |
+以下已對照 `server/src/control/taskRunner.ts`、`runtime/src/claudeCliRuntime.ts`、
+`runtime/src/promptRenderer.ts` 確認：
 
-- **1 failed**：`server/__tests__/claudeHookInstaller.test.ts > rejects when the .claude directory is not writable` — 開發容器以 root 執行，`chmod` 擋不住 root，在未修改的 tree 上同樣失敗。**非本專案程式問題，未為此改動 production code。**
-- **1 skipped**：真實 Claude 付費 smoke（opt-in，需 `AGENT_OFFICE_CLAUDE_SMOKE=1` + 沙箱 + token）。
+- ✓ `npm run link-native-agent` 登錄既有 CC 原生 Agent；Office 以 `nativeAgentPath` 記錄來源關聯。
+- ✓ 派工參數為 `--agent <name>`，且 **`--agent` 與 `--model` 互斥**，不會以
+  Office 的 model 覆蓋原生設定。
+- ✓ **不複製 persona**：原生 Agent 的 prompt 只含「Operating instructions ＋
+  Task ＋ Project」（`renderNativeAgentPrompt`），不含 persona、Skills、
+  AgentKnowledge。
+- ✓ **每次派工重新讀原始檔**，並**重新驗證可唯一定位**（同名衝突、檔案已變動都會
+  在派工當下再檢查一次），不依賴 link 當時的快取。
+- ✓ 來源限定在使用者 `~/.claude/agents/` 樹內；同樹存在相同 frontmatter name 時拒絕。
+- ✓ 檔案含未解決的 git conflict marker → 拒絕登錄與派工。
+- ✓ **Linux／WSL2 沙箱模式下，原生關聯 Agent 一律拒絕派工**（`~/.claude` 刻意在
+  namespace 之外），錯誤訊息明示需以 Windows shell 模式執行，不靜默退回複製 prompt。
 
----
+以上仍需在 Windows 完成最小實際流程驗證。檔案位置與同名檢查是**目前實作範圍**，
+不等於已涵蓋 Claude 所有設定來源與優先順序。
 
-## 4. 待完成事項
+### 顯示快取的限制 ✓
 
-### A. Windows 使用驗收（最高優先，阻塞「可用」）
+- **下一次派工**：重新讀原始檔（權威）。
+- **Office 清單／詳細面板**：原生關聯 Agent 不算 file-backed，`agentDetail` 走
+  資料庫列 —— CC 編輯後畫面**不會**自動更新。
+- 重新 link 可刷新顯示，但日常派工不應依賴此步驟。
 
-尚未在任何 Windows 主機執行過。需驗證：
+正確說法是：**原始檔是權威來源，Office 有非權威的顯示快取。**
+不可把畫面中的舊文字當成實際派工內容。
 
-0. Claude Code 發現橋接的實際互通（Office 產生的 `discovery/agent.md` 能被 CC
-   讀到；CC 原生 subagent 能登記並以 `--agent` 派工）——此段尚未在任何真實
-   主機驗證。
-1. `agent-office.cmd` 能啟動、首次同意流程正常、印出的網址可開啟 UI。
-2. 以 `cmd.exe` 啟動 `claude.cmd` 子程序（參數由我們加引號後 verbatim 傳入，其中一個是 JSON）。
-3. deny rules 的 Windows 路徑形式（反斜線已正規化，但 Claude Code 在 Windows 的規則語法未證實）。
-4. 完整流程：建 Agent → 建 Project／Task → Run → Review → Request changes → Accept → 重開仍在。
+### Knowledge 連接方式（原 §8 待確認項）✓
 
-失敗時回報錯誤原文即可，只修該點。
-
-### B. WSL2 驗收（若要用 WSL2）
-
-執行 `npm run verify:wsl2`（免費、不裝套件、不用 sudo）。需驗證：
-
-1. `bwrap` 存在且 unprivileged user namespace 未被政策擋（Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns=1` 會拒絕）。
-2. namespace 行為（agents 不可見／專案唯讀／work 可寫／環境不繼承／process 隔離）。
-3. `/mnt/c` 專案的掛載方式與效能。
-4. **真實** Windows interop 嘗試（執行 `cmd.exe` 副本，非僅檢查 `/init` 不存在）。
-
-若 `bwrap` 未安裝，需先決定是否安裝（需 sudo，未經同意不會執行）。
-
-### C. 一次最小付費驗收（待同意）
-
-同一 Task 首次執行 + 一次 revision，驗證：真實認證、`--resume` 續跑、兩份 Output 與 feedback 保存。
-目前**未執行**，等明確同意才做。
-
-### D. 已知限制（非缺陷，已記錄於 ADR 008）
-
-| 項目                       | 狀態                                                                |
-| -------------------------- | ------------------------------------------------------------------- |
-| 網路未隔離                 | 沙箱內可連外，掛入的專案內容與憑證理論上可外傳；加 netns 會切斷 API |
-| 憑證對執行中程序可見       | 程序必須認證；可自行將 token 寫到可寫之處，未宣稱能阻止             |
-| abstract unix socket       | 屬 network namespace，主機 socket 仍可達；Office 以授權閘門保護     |
-| Windows 無 OS 級隔離       | 以一次性同意取代；shell 指令以使用者權限執行                        |
-| Windows 上 transcript 共用 | shell 模式沿用使用者自己的 `~/.claude`，各 run 不分開               |
-
-若要繼續做 OS 層隔離（容器／獨立系統使用者／平台 sandbox），需先決定平台與部署方式。
-
-### E. 明確不做（本階段範圍外）
-
-MCP Memory Provider、RAG／embeddings／語意搜尋、自動記憶、多 Agent 編排、Manager Agent、自動任務拆解、自動指派、平行執行、Agent 間訊息、背景常駐 Agent、雲端、多使用者、認證系統、pixel office 閒置角色、HTML／Figma 專屬輸出流程、UI 重新設計。
+**目前 Office 的 AgentKnowledge 與原生 CC Agent 之間沒有自動互通。**
+原生關聯 Agent 的派工 prompt 不含任何 Office Skills／AgentKnowledge；
+knowledge 指標與 discovery 橋接只作用於**已檔案化**的 Office Agent，不作用於
+原生關聯 Agent。要讓原生 Agent 用到知識，必須從 CC 那一側配置。
 
 ---
 
-## 5. 決策紀錄（ADR）
+## 4. Office 核心能力（既有，已凍結）
 
-| #                                                       | 決策                                                     |
-| ------------------------------------------------------- | -------------------------------------------------------- |
-| [001](adr/001-project-aggregate-boundary.md)            | Project 不內嵌 agents／tasks／knowledge／outputs         |
-| [002](adr/002-agent-definition-session-separation.md)   | AgentDefinition、AgentSession、Task 是三件事             |
-| [003](adr/003-control-plane-runtime-separation.md)      | Control Plane 與 Runtime 分離，可不同機器                |
-| [004](adr/004-provider-independent-domain.md)           | Domain 不依賴 provider／storage／UI                      |
-| [005](adr/005-global-agents-and-knowledge-ownership.md) | Agent 全域；知識所有權嚴格分離                           |
-| [006](adr/006-sqlite-local-persistence.md)              | SQLite 為本機正式儲存                                    |
-| [007](adr/007-agent-file-storage.md)                    | Agent 設定存於各自檔案，以 agent id 為鍵                 |
-| [008](adr/008-run-sandbox.md)                           | Claude 執行於 bubblewrap namespace；control plane 需授權 |
+- 全域 Agent、Project、Task、成員與指派管理；SQLite ＋ 檔案持久化。
+- Run → Output → Review → Accept／Request changes → 續跑（`--resume` 續同一 session）。
+- 一次只跑一個 Task；不做平行或多 Agent 編排。
+- Windows shell 模式 ＋ 一次性風險同意；Linux／WSL2 沙箱不可用即拒絕派工。
+- Office control plane 全部讀寫訊息需 server token。
+- 資料邊界：Project／Task／Output／review feedback 永不自動變成 Agent 永久知識。
 
-## 6. 相關文件
+里程碑：M0 `fc585db`、M1 `322dda8`、M2 `03324ca`、M3 `be60a41`／`a7f4e4a`／`339cf38`、
+M4 `4b077b1`／`a894847`、M5 `f06f77e`／`9ed0545`／`cb54945`、Windows `510632c`、
+CC 橋接 `e8cc9ca`…`e377594`。
 
-- [Windows 快速開始](windows-quickstart.md) — 三步設定與日常使用
-- [備份與還原](backup-and-restore.md) — 含 legacy 資料只能還原到遷移當時的限制
-- [ADR 008](adr/008-run-sandbox.md) — 隔離的三個層級與各自強度
+---
+
+## 5. Windows 已驗證（使用者實測）
+
+環境：PowerShell、原生 Windows（不走 WSL）、Node v22.17.0、Claude Code v2.1.276
+（`C:\Users\amber\.local\bin\claude.exe`，PATH 已處理）。
+新 checkout `C:\Users\amber\agent\agent-office-v1.0-new`，舊資料夾 `…\agent-office-1.0`。
+
+已完成：
+
+- npm 安裝與 build。
+- 以 **`node .\dist\cli.js`** 啟動 Office，瀏覽器可開啟介面。
+- Windows 一次性 shell consent 成功記錄。
+- `verify:cc-bridge` 的 packaged build 啟動、測試 Agent 建立、junction、discovery
+  範圍、欄位分離與 Knowledge 指標檢查通過。
+- storage 測試曾為 141 passed。
+
+⚠ 入口更正：實際成功的入口是 **`dist/cli.js`**。repo 內確認**不存在** `.mjs` 入口
+（`dist/` 只有 `cli.js`、`extension.js`、`uninstall.js`），舊 log 的 `.mjs` 指示是錯的。
+`agent-office.cmd` 是同等入口但**尚未實測**。
+
+---
+
+## 6. 測試現況（兩套數字，不可混用）
+
+| 環境                             | 結果                                        |
+| -------------------------------- | ------------------------------------------- |
+| 開發 Linux 容器 `npm test`       | 646 passed ／ 1 failed ／ 1 skipped         |
+| **Windows**（`bac86d9`，使用者） | **570 passed ／ 56 failed ／ 18 skipped**   |
+| Windows `verify:cc-bridge`       | 8 pass ／ 1 fail（fail 是整組 test-server） |
+| Windows server 測試              | 7 files failed ／ 30 passed ／ 1 skipped    |
+
+Linux 那 1 failed 是 `claudeHookInstaller` 的 root 權限問題，與 Windows 無關。
+**不可用 Linux 數字代表 Windows 現況。**
+
+### Windows 觀察到的問題
+
+- 測試寫入正式 `C:\Users\amber\.pixel-agents\config.json`，rename EPERM。
+- consent／config 預期與實際不符、資料殘留、ENOENT。
+- mock Claude 子程序 timeout。
+- taskExecution 未記錄到預期 Claude 呼叫；taskReview 取到 undefined。
+- Windows 路徑跳脫比對失敗；listen ENOBUFS。
+- 背景 bridge 工作出現 SQLite database is closed。
+
+**已定位的根因（✓ 本次查證）**：`configPersistence.test.ts`、`consentFlow.test.ts`、
+`clientMessageHandler.test.ts` 只覆寫 `process.env.HOME`，**沒有覆寫 `USERPROFILE`**。
+Node 在 Windows 上 `os.homedir()` 取 `USERPROFILE`，所以這三支測試在 Windows 會落到
+**真實的** `%USERPROFILE%\.pixel-agents\`——這就是 EPERM 與 config 殘留的來源。
+（其他 7 支測試用 `vi.mock('os')` 覆寫 `homedir`，不受影響。）
+
+開發端之後回報部分相關測試通過，但**未取得更新後的完整 Windows 結果**，
+上述問題不可標成已修復。
+
+### 對近期工作的原則
+
+- **不以整套測試全綠作為使用門檻。**
+- 不再執行可能寫入正式設定的測試；必要自動驗證必須隔離。
+- 不刪測試、不放寬斷言、不停用同意檢查換取通過。
+- 只優先修與「第一個 Agent 登錄／保存／派工」直接相關的錯誤。
+- 若最小流程涉及正式設定風險或資料損壞，仍須先處理。
+
+---
+
+## 7. 最短執行順序
+
+**第一步 — 確定第一個 Agent**：向使用者取得 ①名稱 ②用途與基本工作指示
+③是否已有原生檔案及路徑。不自行建立範例 Agent。檔案須位於
+`~/.claude/agents/`（目前登錄功能支援的位置）。
+
+**第二步 — 備份並更新本機**：確認目前 checkout commit 與 build 狀態（不假設已是
+`e377594`）；停止本次 Office 實例（不按名稱殺光 node）；備份 Office 資料與原生
+Agent 來源；正常 fast-forward 更新，有本機改動先看不硬重設；只做必要安裝與 build，
+不重跑全套測試。指令用 PowerShell ＋ `npm.cmd`，不混入 CMD 語法。
+
+**第三步 — 登錄、啟動與重啟確認**：Office 停止時以 `link-native-agent` 登錄**確定
+存在**的原始檔（不給仍含 `<name>` 的佔位指令）→ `node .\dist\cli.js` 啟動 → 確認
+Agent 可見 → 重啟後關聯仍在 → 改原始指示後確認派工讀到更新（UI 快取未更新須明說）。
+
+**第四步 — 一次真實任務**：建 Project、加入 Agent、指派簡單 Task；任務文字先經使用者
+確認才呼叫模型；確認以指定原生 Agent 啟動、結果可查看與 Accept。
+單靠 Agent 自報名字**不足以**證明原生選擇成功，需結合啟動參數或執行紀錄（不暴露憑證）。
+遇阻塞只修該點、回報原始錯誤，不擴大架構。
+
+**完成第四步即可開始小規模使用。**
+
+---
+
+## 8. 大型知識庫
+
+- 現在可準備原始資料與分類，不必立即搬移。
+- 第一個 Agent 跑通後，先加少量代表性 Knowledge，驗證可讀取、路徑可解析、內容可用。
+- 不把整個知識庫塞進 Agent 本文；用分類檔案、索引與按需讀取。
+- ✓ 已確認：Office AgentKnowledge 與原生 CC Agent **不會**自動互通（見 §3）。
+- 保留原始資料；大量 PDF／圖片／二進位檔先評估 Git 儲存方式。
+
+## 9. 備份與同步邊界
+
+- **Office**：停止服務後一致備份 `agent-office.db`、`agents/`、`blobs/`，
+  以及需保留的設定。`runtime/` 是暫存。詳見 [backup-and-restore.md](backup-and-restore.md)。
+- **CC**：另外備份實際原生 Agent 檔案；加入 Skills／Knowledge 後納入其來源位置。
+- 只備份 `.agent-office` **不足以**備份新方案中的原生 Agent。
+- 不把整個 `.claude` 推上 GitHub（含認證與會話資料）。
+
+GitHub 私有同步仍是正式後續交付，**尚無建立／首次推送完成的證據**。需交付：私有 repo、
+納入／排除範圍、首次同步、第二台電腦登錄或連結重建、日常 pull／commit／push 步驟。
+
+## 10. 可延後
+
+完整 Windows 回歸測試與無關的 hooks 問題；WSL2／Linux 沙箱驗收；Office → CC 方向橋接
+完整驗收；完整 Request changes／resume 驗收；顯示快取自動刷新與匯入 UI；GitHub 多主機
+同步與完整 Skills／Knowledge 配置；多 Agent 編排、Manager、平行執行、自動記憶、RAG、
+雲端、多使用者、UI 重設計。
+
+延後不等於取消——GitHub 私有同步與大型知識庫仍是目標。
+
+---
+
+## 11. 完成標準
+
+**一個使用者要的 CC 原生 Agent，在 Windows Office 重啟後仍可使用，並完成一次經使用者
+確認的真實任務。**
+
+接手者請勿重啟大型設計或要求全套測試先通過。先確認第一個 Agent 的名稱、用途與原始檔
+是否存在，再依目前程式與本機狀態給出最短 PowerShell 步驟；若無法完成，指出卡在
+「建立／登錄／保存／原生選擇／執行」哪一步，完成最小修正。
+
+## 附：決策紀錄
+
+[ADR 索引](adr/README.md)（001–008）。與本階段最相關：
+[007 Agent 檔案儲存](adr/007-agent-file-storage.md)、
+[008 執行沙箱與控制平面授權](adr/008-run-sandbox.md)。
