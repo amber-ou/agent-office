@@ -101,43 +101,128 @@ Agent、指派工作；Office 只觀測並顯示。** 沿用既有像素辦公�
 「歸屬到單一次呼叫」的用量，需要把該次呼叫時間窗內、且沒有其他並行呼叫互相干擾的
 sidechain usage 記錄加總——這件事在有並行呼叫時容易算錯，一旦本輪時間有限，選擇不做，
 以免顯示出不可靠但看起來像真的數字。`AgentCallUsage`／`usage_*` 欄位與 UI 顯示邏輯已
-就位（`storage/src/callLog.ts`、`TaskLogPanel.tsx`），未來要接上時，只需要在
+就位（`storage/src/callLog.ts`、`AgentPanel.tsx`），未來要接上時，只需要在
 `callLogBridge.ts` 呼叫 `storage.callLog.setUsage(...)`。
 
-## 6. 前端
+## 6. 前端：整合的 Agent 面板
 
-- `webview-ui/src/control/TaskLogPanel.tsx`（新）：唯讀清單，取代 `OfficePanel`，欄位為
-  呼叫時間／Agent／任務內容（截斷可展開）／狀態／執行時長（執行中即時更新）／結束時間，
-  預設最新在前。沒有 Token 欄（見上）。
-- `webview-ui/src/control/useTaskLog.ts`（新）：訂閱 `nativeAgentRoster`／
-  `agentCallLogSnapshot`／`agentCallUpdated`，送出一次 `requestCallLog`。
-- `BottomToolbar.tsx` 的「Office」按鈕改名「任務紀錄」，`App.tsx` 不再掛載
-  `OfficePanel`／`ProjectWorkspacePanel`／`AgentConfigPanel`（檔案本身保留，未刪除，
-  只是不再被引用）。點擊人物改為開啟任務紀錄面板（原本開啟的是 Office 的 Agent
-  設定表單，該表單已不在新流程中）。
+底部按鈕改名「Agent」，是所有 CC Agent 的單一入口——不只是呼叫歷史。
+
+- `webview-ui/src/control/agentDirectory.ts`（新）：**唯一**一份「這個 Agent 現在算
+  哪種狀態」的計算邏輯（`deriveAgentState`／`computeAgentSummaries`），供人物、整合
+  列表、單一 Agent 詳情三處共用，避免各自算一次而彼此不一致。狀態優先序：任一呼叫
+  `waiting_response` → 等待回應；任一呼叫 `running` → 工作中；都沒有時看「最近一次」
+  呼叫——若它是 `unknown`（重啟／斷線後未確認結束）或 `background_not_tracked`（背景
+  委派，本版不追蹤結果），回報**未知**，不會因為「查無正在執行的呼叫」就冒充「待命」；
+  只有最近一次呼叫確實是 `ended`／`failed`，才是待命。同一 Agent 有多筆並行呼叫時，
+  其中一筆結束或變成未知，不影響其餘仍在執行的呼叫——狀態只會因為「已經沒有任何一筆
+  在跑」才降級。
+- `webview-ui/src/control/useAgentDirectory.ts`（新，取代 `useTaskLog.ts`）：訂閱
+  `nativeAgentRoster`／`agentCallLogSnapshot`／`agentCallUpdated`與 transport 本身的
+  連線狀態，送出一次 `requestCallLog`，並用 `computeAgentSummaries` 算出
+  `agents: AgentSummary[]`。
+- `webview-ui/src/control/AgentPanel.tsx`（新，取代 `TaskLogPanel.tsx`）：兩個區塊。
+  「Agent 狀態」——每個已掃描到的 Agent 一列（名稱／狀態／目前任務／執行時長），**即使
+  完全沒有呼叫歷史也會列出**，待命列顯示「目前無執行任務」與執行時長「—」，從未被呼叫
+  過的再加註「・尚未呼叫」。真的掃描不到任何 Agent 時顯示「尚未找到 CC Agent」與實際
+  掃描位置（`nativeAgentRoster.root`，新增欄位）；連線中斷時明確標示「連線中斷」而不是
+  顯示成待命或空白（已載入過的清單則保留最後已知狀態並加註提示，而不是整個清空）。
+  「呼叫歷史」——沿用原本任務紀錄的欄位與展開行為，不變。點一列 Agent 狀態會開啟
+  `AgentDetailPanel`。
+- `webview-ui/src/control/AgentDetailPanel.tsx`（新）：單一 Agent 的名稱、狀態、目前
+  任務、本次呼叫時間與執行時長、可歸屬的 Token（有才顯示）、完整呼叫歷史（可展開）。
+  點擊辦公室裡的人物與點擊面板中的一列，開啟的是**同一個元件**、吃同一份
+  `useAgentDirectory()` 資料，不會有兩邊顯示不一致的問題。編輯佈局模式時
+  `OfficeCanvas.tsx` 既有的 `isEditMode` 判斷本來就會擋掉人物點擊，不需要額外處理。
+- `webview-ui/src/control/callLogFormat.ts`（新）：呼叫狀態中文標籤與時間／時長格式化，
+  供 `AgentPanel.tsx`／`AgentDetailPanel.tsx` 共用，確保兩處顯示規則一致。
+- `App.tsx` 不再掛載 `OfficePanel`／`ProjectWorkspacePanel`／`AgentConfigPanel`（檔案
+  本身保留，未刪除，只是不再被引用）。
 
 ## 7. 已知限制與後續
 
-- 只支援 `Task` 工具委派；獨立 `--agent` 會話不可觀測（見第 2 節）。
+- 只支援 `Task`／`Agent` 兩種工具名稱的委派；若實際版本用第三種名稱，清單會漏記
+  （見第 2 節）；獨立 `--agent` 會話仍不可觀測。
 - 沒有 Token 資料（見第 5 節）。
+- 極少數新版「隱性 Team」背景委派可能被誤標成「已結束」而非正確排除為既有的
+  Teammate 機制（見第 2 節「已知殘留角落」）。
 - Playwright e2e（`e2e/tests/browser/office-characters.spec.ts`）仍模擬舊的
   `officeState`／Project／Task 驅動流程，尚未針對新的 `nativeAgentRoster`／
   `agentCallLogSnapshot` 協定改寫；本輪的隔離驗證改由重寫後的
-  `webview-ui/test/officeCharacters.test.ts` 涵蓋（見下方驗證指令）。真實瀏覽器 e2e
+  `webview-ui/test/officeCharacters.test.ts` 與新增的
+  `webview-ui/test/agentDirectory.test.ts` 涵蓋（見下方驗證指令）。真實瀏覽器 e2e
   改寫留待後續。
 - Skills、知識庫、Agent 的 GitHub 私有同步仍由 CC 那側管理，未變動。
 
 ## 8. 回退方式
 
-- 純前端：把 `App.tsx` 的 `<TaskLogPanel .../>` 換回 `<OfficePanel .../>`（該元件與其
-  依賴的 `useOfficeState.ts` 未被刪除），`BottomToolbar` 按鈕文字改回即可，不需要還原
-  資料庫。
+- 純前端：把 `App.tsx` 的 `<AgentPanel .../>`／`<AgentDetailPanel .../>` 換回
+  `<OfficePanel .../>`（該元件與其依賴的 `useOfficeState.ts` 未被刪除），
+  `BottomToolbar` 按鈕文字改回即可，不需要還原資料庫。
 - 後端：`agent_calls` 是新增的獨立資料表（migration 4），未修改任何既有表；不想保留
   觀測資料時，直接 `DROP TABLE agent_calls`（或整個刪除 `~/.agent-office/agent-office.db`
   重新遷移）不會影響 `projects`／`agents`／`tasks`／`agent_sessions` 既有資料。
 - 不需要刪除或重置 CC 原生 Agent 檔案（`~/.claude/agents/`）——Office 從未寫入這個目錄。
 
-## 9. 驗證
+## 9. 測試污染真實 `~/.claude/agents` 的根因與修復
+
+使用者回報 `~/.claude/agents` 下出現 `ux-*` 命名、指向
+`Temp\agent-office-service-*\agents\<uuid>\discovery` 的 junction。
+
+**根因**：`server/__tests__/officeService.test.ts`／`taskReview.test.ts`／
+`taskExecution.test.ts`／`claudeSmoke.test.ts` 這四個測試檔用
+`setOfficeDataRoot(tempDir)` 隔離了 SQLite 資料庫位置，但呼叫
+`OfficeService.createAgent()`（測試裡建立名叫「UX Agent」／「UX」／「QA」的 Agent）時，
+會觸發 CC discovery bridge 同步（`officeStorage.ts` 的 `syncAfterFileWrite`），這個
+同步預設寫向**真正的** `~/.claude/agents`（因為這四個檔案從未呼叫
+`setClaudeDiscoveryPaths` 覆寫掃描路徑）。測試結束後 `afterEach` 刪除暫存目錄，
+真實 `~/.claude/agents` 下的 junction 就變成指向不存在路徑的殘留。
+
+**已修復（程式碼，本次 commit 內）**：四個檔案都補上與 `officeAuthorization.test.ts`／
+`officeCharacters.test.ts` 相同的 `setClaudeDiscoveryPaths({ claudeAgentsRoot: <暫存
+子目錄>, ... })` 隔離，並在 `afterEach` 還原。之後再執行這些測試，不會再對真實
+`~/.claude/agents` 寫入任何東西——已用這四個檔案的隔離測試跑過確認。
+
+**尚未也無法由我這邊處理**：清理使用者機器上已經存在的殘留 junction。這個工作階段
+沒有存取使用者 Windows 機器檔案系統的管道，只能提供下面這段唯讀盤點腳本，**請自行
+執行、確認清單後再執行清除**（只移除 junction 本身，不遞迴刪除目標，因為目標多半已經
+是不存在的暫存路徑）：
+
+```powershell
+# 第一步：唯讀盤點——只列出，不刪除任何東西
+Get-ChildItem "$env:USERPROFILE\.claude\agents" | Where-Object {
+  $_.LinkType -eq 'Junction'
+} | ForEach-Object {
+  [PSCustomObject]@{
+    Name            = $_.Name
+    Target          = $_.Target
+    # 用「目標路徑含測試用的暫存資料夾名稱」判斷，而不是用 ux- 這種顯示名稱過濾——
+    # 避免漏掉非 ux- 開頭、但同樣來自測試殘留的連結。
+    LooksLikeTestLeak = $_.Target -match 'agent-office-(service|review|exec|smoke)-'
+    TargetExists    = Test-Path $_.Target
+  }
+} | Format-Table -AutoSize
+```
+
+看過輸出、確認 `LooksLikeTestLeak` 為 `True`（且通常 `TargetExists` 為 `False`）的項目
+確實是您列出的那幾個（或其他同樣符合模式的）之後，才用下面這段只刪 junction 本身的
+指令逐一清除（`Remove-Item` 對 junction／reparse point，不加 `-Recurse` 時只會移除
+連結本身，不會動到（早已不存在的）目標目錄；`skill-retriever.md` 或其他正式 Agent
+一律不受影響，因為篩選條件只看測試暫存路徑特徵）：
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\.claude\agents" | Where-Object {
+  $_.LinkType -eq 'Junction' -and $_.Target -match 'agent-office-(service|review|exec|smoke)-'
+} | ForEach-Object {
+  Write-Host "Removing junction: $($_.FullName) -> $($_.Target)"
+  Remove-Item $_.FullName -Force
+}
+```
+
+如果盤點結果跟預期不符（例如某個 `LooksLikeTestLeak=True` 的項目其實是您自己建立、
+剛好路徑相似的東西），先不要執行清除指令，把輸出貼給我確認。
+
+## 10. 驗證
 
 ### 隔離事件測試（已執行，不需要真人 Claude 連線）
 
@@ -164,12 +249,20 @@ npm run test:server
   `installCallLogBridge` 寫入真的（暫存）SQLite、比對真的（暫存）`~/.claude/agents`
   名單解析身分、到 `agentCallUpdated` 廣播——涵蓋「觀測事件能不能真的傳到資料庫與前端
   訊息」這條完整路徑，不是只測其中一段。
-- `webview-ui/test/officeCharacters.test.ts`（改寫）：待命人物、roster 增減不重複、
-  呼叫開始／結束切換工作狀態、未辨識呼叫不建立人物、並行呼叫互不影響、快照重置。
+- `webview-ui/test/officeCharacters.test.ts`（改寫＋新增）：待命人物、roster 增減不
+  重複、呼叫開始／結束切換工作狀態、未辨識呼叫不建立人物、並行呼叫互不影響、快照重置、
+  最近一次呼叫是 `background_not_tracked`／`unknown` 時人物顯示「未知」而非「待命」
+  且不播放工作動畫。
+- `webview-ui/test/agentDirectory.test.ts`（新）：`deriveAgentState`／
+  `computeAgentSummaries` 這個人物／整合列表／單一 Agent 詳情共用的狀態計算——沒有
+  呼叫歷史時是待命、只有終態呼叫時是待命、任一呼叫執行中或等待回應時的優先序、並行
+  呼叫其中一筆結束或變成未知不影響其餘仍在執行的呼叫、未辨識呼叫不歸屬到任何 Agent、
+  即使零呼叫歷史也會列出每個 roster Agent。
 
-這些測試合起來涵蓋「觀測事件 → 資料庫 → 廣播 → 前端人物／清單」整條路徑的每一段，
-但仍不是真的啟動 Claude 或開瀏覽器的端對端測試——第 2 節列出的觀測缺口與已知邊界
-情況，仍需要下面的 Windows 真人驗收才能確認。
+這些測試合起來涵蓋「觀測事件 → 資料庫 → 廣播 → 前端人物／整合列表／單一 Agent 詳情」
+整條路徑的每一段，且三處消費同一份狀態計算，但仍不是真的啟動 Claude 或開瀏覽器的
+端對端測試——第 2 節列出的觀測缺口與已知邊界情況，仍需要下面的 Windows 真人驗收
+才能確認。
 
 `server/__tests__/claudeHookInstaller.test.ts` 的「目錄不可寫入」一項在以 root 執行測試
 的環境下會失敗（root 略過檔案權限檢查），這是執行環境本身的限制，與本輪修改無關，換一般
@@ -192,13 +285,22 @@ npm.cmd run build
 node .\dist\cli.js
 ```
 
-1. 開啟輸出的網址；`~/.claude/agents/skill-retriever.md` 存在時，重新整理即可看到
-   「待命」的 skill-retriever 人物，不需要建立 Project 或 Office Task。
-2. 在一個一般 Claude Code 對話中，以 `Task` 工具委派 `subagent_type: skill-retriever`
-   並給出真實任務文字。
-3. 確認：人物切換「工作中」；「任務紀錄」清單新增一筆，呼叫時間／任務內容與實際相符；
-   委派完成後人物回到「待命」，紀錄狀態變「已結束」，執行時長固定；重新整理瀏覽器後
-   紀錄仍在。
-4. 重覆呼叫同一 Agent 兩次，確認清單有兩筆各自獨立的紀錄，沒有重複人物。
+1. 開啟輸出的網址；`~/.claude/agents/skill-retriever.md` 存在時，重新整理即可看到底部
+   「Agent」面板列出 skill-retriever，狀態「待命」、目前任務「目前無執行任務」、執行
+   時長「—」（若從未呼叫過，另外加註「・尚未呼叫」），不需要建立 Project 或 Office
+   Task。
+2. 點擊辦公室裡的 skill-retriever 人物，確認開啟的是同一個 Agent 的詳情，且待命狀態
+   與面板一致（「Agent 詳情」跟「Agent 面板裡的那一列」不會有兩套不同的文字）。
+3. 在一個一般 Claude Code 對話中，以 `Task` 或 `Agent` 工具委派
+   `subagent_type: skill-retriever` 並給出真實任務文字。
+4. 確認：人物切換「工作中」；Agent 面板該列狀態變「工作中」、目前任務與執行時長即時
+   更新；點人物開啟的詳情也同步顯示「工作中」與相同任務內容；下方「呼叫歷史」新增
+   一筆，呼叫時間／任務內容與實際相符。
+5. 委派完成後：人物回到「待命」，面板該列與詳情都回到「待命」／「目前無執行任務」，
+   歷史紀錄狀態變「已結束」，執行時長固定；重新整理瀏覽器後名單與紀錄仍在。
+6. 重覆呼叫同一 Agent 兩次（或請它同時委派兩個子任務），確認呼叫歷史有兩筆各自獨立
+   的紀錄，人物與面板不會因其中一筆先結束就顯示待命，沒有出現重複人物。
+7. 編輯佈局（Layout 按鈕）時點擊人物，確認不會彈出 Agent 詳情、不干擾既有的選取／
+   拖曳操作。
 
-不得以模擬畫面或假事件取代第 2-4 步；Token 目前無資料可驗證（見第 5 節）。
+不得以模擬畫面或假事件取代第 3-6 步；Token 目前無資料可驗證（見第 5 節）。

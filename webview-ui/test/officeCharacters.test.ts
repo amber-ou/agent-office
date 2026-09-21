@@ -24,6 +24,7 @@ const rosterEntry = (
 const roster = (agents: NativeAgentRosterEntry[]): NativeAgentRoster => ({
   type: 'nativeAgentRoster',
   agents,
+  root: '/home/user/.claude/agents',
 });
 
 let nextCallId = 1;
@@ -167,6 +168,24 @@ describe('Office residents are sourced from the CC native-agent roster', () => {
     residents.receive({ type: 'agentCallUpdated', call: { ...callB, status: 'ended' } });
     residents.sync(os, true);
     expect(os.characters.get(id)?.officeStatus).toBe('idle');
+  });
+
+  it('shows unknown (not idle) when the most recent call is background_not_tracked or restart-unknown', () => {
+    const os = scene();
+    const retriever = rosterEntry('skill-retriever');
+    const residents = new OfficeCharacters();
+    residents.receive(roster([retriever]));
+    const [id] = residents.sync(os, true);
+
+    residents.receive({
+      type: 'agentCallUpdated',
+      call: call(retriever, 'background_not_tracked'),
+    });
+    residents.sync(os, true);
+    expect(os.characters.get(id)?.officeStatus).toBe('unknown');
+    // 'unknown' never plays the working animation: it's not a confirmed idle
+    // OR a confirmed still-running state.
+    expect(os.characters.get(id)?.isActive).toBe(false);
   });
 
   it('a full snapshot replaces prior call state (e.g. after a reconnect)', () => {

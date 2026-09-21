@@ -543,6 +543,7 @@ export interface OutputContent {
 export interface NativeAgentRoster {
   type: 'nativeAgentRoster';
   agents: NativeAgentRosterEntry[];
+  root: string;
 }
 
 export interface NativeAgentRosterEntry {

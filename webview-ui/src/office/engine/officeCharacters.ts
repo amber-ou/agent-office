@@ -3,15 +3,13 @@ import type {
   NativeAgentRosterEntry,
   ServerMessage,
 } from '../../../../core/src/messages.js';
+import type { AgentStatus } from '../../control/agentDirectory.js';
+import { AGENT_STATUS_LABELS, deriveAgentState } from '../../control/agentDirectory.js';
 import { getLoadedCharacterCount } from '../sprites/spriteData.js';
 import type { OfficeState } from './officeState.js';
 
-export type OfficeCharacterStatus = 'idle' | 'working';
-
-export const OFFICE_CHARACTER_LABELS: Record<OfficeCharacterStatus, string> = {
-  idle: '待命',
-  working: '工作中',
-};
+export type OfficeCharacterStatus = AgentStatus;
+export const OFFICE_CHARACTER_LABELS = AGENT_STATUS_LABELS;
 
 function hashId(value: string): number {
   let hash = 2166136261;
@@ -19,33 +17,28 @@ function hashId(value: string): number {
   return hash >>> 0;
 }
 
-/** A call still occupying its agent — the character stays 'working' while
- *  any of these exist for it, and one call ending must never flip a
- *  character idle while a sibling concurrent call is still open. */
-const OPEN_CALL_STATUSES: ReadonlySet<AgentCallLogEntry['status']> = new Set([
-  'running',
-  'waiting_response',
-]);
-
 /**
  * Persistent characters sourced from the CC-native agent roster
  * (`~/.claude/agents`), independent of any Office Project/AgentDefinition —
  * see docs/task-log.md. CC is the sole authority on which agents exist;
  * Office only observes.
  *
- * Live activity comes from observed calls (`agentCallLogSnapshot` /
- * `agentCallUpdated`), keyed by the call's resolved `agentFilePath`. A call
- * that could not be matched to exactly one roster file (`recognized: false`)
- * never creates or activates a character — it appears only in the read-only
- * call list as "未辨識 Agent" (see TaskLogPanel). Creating or idling a
- * character never launches a model.
+ * Status for each character comes from `deriveAgentState` in
+ * `control/agentDirectory.ts` — the exact function `AgentPanel.tsx` and
+ * `AgentDetailPanel.tsx` also call, so a character can never show a status
+ * the panel or a detail view would disagree with. A call that could not be
+ * matched to exactly one roster file (`recognized: false`) never creates or
+ * activates a character — it appears only in the read-only call list as
+ * "未辨識 Agent" (see AgentPanel). Creating or idling a character never
+ * launches a model.
  */
 export class OfficeCharacters {
   private roster: NativeAgentRosterEntry[] = [];
-  /** agentFilePath -> set of currently-open call ids for that agent. Several
-   *  concurrent calls to one agent are tracked individually so one ending
-   *  never idles the character while a sibling call is still running. */
-  private readonly openCallsByAgent = new Map<string, Set<string>>();
+  /** agentFilePath -> (callId -> call). Full call objects, not just open
+   *  ids, so status derivation (including the "most recent call was
+   *  unresolved" fallback to `unknown`) is the same computation the panel
+   *  and detail view use — never a second, possibly-diverging one here. */
+  private readonly callsByAgent = new Map<string, Map<string, AgentCallLogEntry>>();
   /** agentFilePath -> stable negative character id, so the same agent never
    *  gets a second character across roster refreshes or call updates. */
   private readonly ids = new Map<string, number>();
@@ -54,7 +47,7 @@ export class OfficeCharacters {
     if (message.type === 'nativeAgentRoster') {
       this.roster = message.agents;
     } else if (message.type === 'agentCallLogSnapshot') {
-      this.openCallsByAgent.clear();
+      this.callsByAgent.clear();
       for (const call of message.calls) this.applyCall(call);
     } else if (message.type === 'agentCallUpdated') {
       this.applyCall(message.call);
@@ -63,13 +56,9 @@ export class OfficeCharacters {
 
   private applyCall(call: AgentCallLogEntry): void {
     if (!call.recognized || !call.agentFilePath) return;
-    const open = this.openCallsByAgent.get(call.agentFilePath) ?? new Set<string>();
-    if (OPEN_CALL_STATUSES.has(call.status)) {
-      open.add(call.id);
-    } else {
-      open.delete(call.id);
-    }
-    this.openCallsByAgent.set(call.agentFilePath, open);
+    const calls = this.callsByAgent.get(call.agentFilePath) ?? new Map<string, AgentCallLogEntry>();
+    calls.set(call.id, call);
+    this.callsByAgent.set(call.agentFilePath, calls);
   }
 
   sync(os: OfficeState, layoutReady: boolean): number[] {
@@ -95,10 +84,13 @@ export class OfficeCharacters {
       const ch = os.characters.get(id)!;
       ch.officeAgentId = agent.filePath;
       ch.agentName = agent.name;
-      const openCount = this.openCallsByAgent.get(agent.filePath)?.size ?? 0;
-      const status: OfficeCharacterStatus = openCount > 0 ? 'working' : 'idle';
+      const calls = [...(this.callsByAgent.get(agent.filePath)?.values() ?? [])];
+      const { status } = deriveAgentState(calls);
       ch.officeStatus = status;
-      const active = status === 'working';
+      // 'unknown' never plays the working animation: this version does not
+      // actually know the agent is still busy, and faking it would be the
+      // same false confidence the status itself refuses to give.
+      const active = status === 'working' || status === 'waiting_response';
       if (ch.isActive !== active) os.setAgentActive(id, active);
       os.setAgentTool(id, null);
       ch.bubbleType = null;

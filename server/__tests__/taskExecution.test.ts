@@ -19,6 +19,7 @@ import { OfficeService } from '../src/control/officeService.js';
 import {
   closeOfficeStorage,
   getOfficeStorage,
+  setClaudeDiscoveryPaths,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
 import { writeWindowsConsent } from '../src/control/runMode.js';
@@ -116,6 +117,13 @@ async function projectWithTask(office: OfficeService): Promise<{
 beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-exec-'));
   setOfficeDataRoot(dataRoot);
+  // createAgent() below syncs to the CC discovery bridge, which links into
+  // ~/.claude/agents; without this override it targets the REAL directory
+  // and leaves a dangling junction once dataRoot is removed in afterEach.
+  setClaudeDiscoveryPaths({
+    claudeAgentsRoot: path.join(dataRoot, 'claude', 'agents'),
+    claudeSkillsRoot: path.join(dataRoot, 'claude', 'skills'),
+  });
   claude = fakeClaude();
   // A sandboxed run authenticates from the environment; without this the
   // runner refuses to dispatch at all, which is its own test below.
@@ -136,6 +144,7 @@ afterEach(() => {
   setTaskRuntime(undefined);
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
+  setClaudeDiscoveryPaths(undefined);
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 

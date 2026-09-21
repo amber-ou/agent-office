@@ -17,7 +17,7 @@ import type { OfficeSession } from './control/officeMessageHandler.js';
 import { isOfficeClientMessage } from './control/officeMessageHandler.js';
 import { getOfficeStorage } from './control/officeStorage.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
-import { scanNativeAgentRoster } from './nativeAgentRoster.js';
+import { scanNativeAgentRosterSnapshot } from './nativeAgentRoster.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
 import { hooksConsentRequest } from './providers/hook/consentGate.js';
@@ -398,7 +398,8 @@ function standaloneConsentEffects(
  * persist" behavior the rest of storage.ts follows.
  */
 function sendCallLogSnapshot(send: WsSend): void {
-  send({ type: 'nativeAgentRoster', agents: scanNativeAgentRoster() });
+  const rosterSnapshot = scanNativeAgentRosterSnapshot();
+  send({ type: 'nativeAgentRoster', agents: rosterSnapshot.agents, root: rosterSnapshot.root });
   const storage = getOfficeStorage();
   if (!storage) {
     send({ type: 'agentCallLogSnapshot', calls: [] });

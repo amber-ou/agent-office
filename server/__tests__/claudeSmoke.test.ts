@@ -22,6 +22,7 @@ import { OfficeService } from '../src/control/officeService.js';
 import {
   closeOfficeStorage,
   getOfficeStorage,
+  setClaudeDiscoveryPaths,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
 import { getTaskRunner } from '../src/control/taskRunner.js';
@@ -44,6 +45,13 @@ function service(): OfficeService {
 beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-smoke-'));
   setOfficeDataRoot(dataRoot);
+  // createAgent() below syncs to the CC discovery bridge, which links into
+  // ~/.claude/agents; without this override it targets the REAL directory
+  // and leaves a dangling junction once dataRoot is removed in afterEach.
+  setClaudeDiscoveryPaths({
+    claudeAgentsRoot: path.join(dataRoot, 'claude', 'agents'),
+    claudeSkillsRoot: path.join(dataRoot, 'claude', 'skills'),
+  });
 });
 
 function reopen(): OfficeService {
@@ -55,6 +63,7 @@ function reopen(): OfficeService {
 afterEach(() => {
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
+  setClaudeDiscoveryPaths(undefined);
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 

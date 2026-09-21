@@ -2254,7 +2254,7 @@ components:
         roster changes on disk.
       type: object
       additionalProperties: false
-      required: [type, agents]
+      required: [type, agents, root]
       properties:
         type:
           const: nativeAgentRoster
@@ -2262,6 +2262,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NativeAgentRosterEntry'
+        root:
+          description: |
+            The directory actually scanned (Claude Code discovery paths
+            override in tests, ~/.claude/agents otherwise). Shown to the
+            person only when the roster is empty, so "no agents found" names
+            where Office looked rather than leaving them to guess.
+          type: string
 
     AgentCallUsage:
       description: |

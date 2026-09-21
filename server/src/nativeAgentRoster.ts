@@ -18,6 +18,18 @@ export function scanNativeAgentRoster(): NativeAgentRosterEntry[] {
   return discoverNativeAgents(getClaudeDiscoveryPaths().claudeAgentsRoot);
 }
 
+export interface NativeAgentRosterSnapshot {
+  agents: NativeAgentRosterEntry[];
+  /** The directory actually scanned — shown to the person when the roster
+   *  is empty, so "no agents found" names where Office looked. */
+  root: string;
+}
+
+export function scanNativeAgentRosterSnapshot(): NativeAgentRosterSnapshot {
+  const root = getClaudeDiscoveryPaths().claudeAgentsRoot;
+  return { agents: discoverNativeAgents(root), root };
+}
+
 /**
  * Resolve a Task tool's `subagent_type` to a roster file. Recognized only
  * when exactly one roster entry (not itself ambiguous) declares that name —
@@ -37,8 +49,8 @@ export function resolveNativeAgentByName(
 }
 
 export function broadcastNativeAgentRoster(store: AgentStateStore): NativeAgentRosterEntry[] {
-  const agents = scanNativeAgentRoster();
-  store.broadcast({ type: 'nativeAgentRoster', agents });
+  const { agents, root } = scanNativeAgentRosterSnapshot();
+  store.broadcast({ type: 'nativeAgentRoster', agents, root });
   return agents;
 }
 
@@ -88,11 +100,11 @@ function startPolling(store: AgentStateStore): void {
   if (pollTimer) return;
   let lastFingerprint = '';
   pollTimer = setInterval(() => {
-    const agents = scanNativeAgentRoster();
+    const { agents, root } = scanNativeAgentRosterSnapshot();
     const fingerprint = JSON.stringify(agents);
     if (fingerprint !== lastFingerprint) {
       lastFingerprint = fingerprint;
-      store.broadcast({ type: 'nativeAgentRoster', agents });
+      store.broadcast({ type: 'nativeAgentRoster', agents, root });
     }
   }, 3000);
 }

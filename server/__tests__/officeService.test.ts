@@ -16,6 +16,7 @@ import { OfficeService } from '../src/control/officeService.js';
 import {
   closeOfficeStorage,
   getOfficeStorage,
+  setClaudeDiscoveryPaths,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
 
@@ -39,11 +40,22 @@ function reopen(): OfficeService {
 beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-service-'));
   setOfficeDataRoot(dataRoot);
+  // createAgent() below triggers the CC discovery bridge sync
+  // (officeStorage.ts's syncAfterFileWrite), which creates a directory
+  // junction/symlink under ~/.claude/agents pointing at this test's
+  // throwaway dataRoot. Without this override it targets the REAL
+  // ~/.claude/agents on whatever machine runs the test, leaving a dangling
+  // link behind once dataRoot is removed below.
+  setClaudeDiscoveryPaths({
+    claudeAgentsRoot: path.join(dataRoot, 'claude', 'agents'),
+    claudeSkillsRoot: path.join(dataRoot, 'claude', 'skills'),
+  });
 });
 
 afterEach(() => {
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
+  setClaudeDiscoveryPaths(undefined);
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 

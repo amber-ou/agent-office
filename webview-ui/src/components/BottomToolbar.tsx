@@ -12,9 +12,10 @@ interface BottomToolbarProps {
   onToggleEditMode: () => void;
   isSettingsOpen: boolean;
   onToggleSettings: () => void;
-  /** Read-only CC activity dashboard: observed native-agent calls. */
-  isTaskLogOpen: boolean;
-  onToggleTaskLog: () => void;
+  /** Read-only CC activity dashboard: every native agent's status plus its
+   *  observed call history. */
+  isAgentPanelOpen: boolean;
+  onToggleAgentPanel: () => void;
   workspaceFolders: WorkspaceFolder[];
 }
 
@@ -24,8 +25,8 @@ export function BottomToolbar({
   onToggleEditMode,
   isSettingsOpen,
   onToggleSettings,
-  isTaskLogOpen,
-  onToggleTaskLog,
+  isAgentPanelOpen,
+  onToggleAgentPanel,
   workspaceFolders,
 }: BottomToolbarProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
@@ -133,11 +134,11 @@ export function BottomToolbar({
         Layout
       </Button>
       <Button
-        variant={isTaskLogOpen ? 'active' : 'default'}
-        onClick={onToggleTaskLog}
-        title="Observed Claude Code agent calls (read-only)"
+        variant={isAgentPanelOpen ? 'active' : 'default'}
+        onClick={onToggleAgentPanel}
+        title="Claude Code agent status and call history (read-only)"
       >
-        任務紀錄
+        Agent
       </Button>
       <Button
         variant={isSettingsOpen ? 'active' : 'default'}
