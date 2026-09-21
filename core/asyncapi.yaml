@@ -218,6 +218,9 @@ components:
           const: agentCreated
         id:
           type: integer
+        sessionId:
+          type: string
+          description: Provider session identity, used to associate an Office resident.
         folderName:
           type: string
         isExternal:
@@ -1112,6 +1115,8 @@ components:
       type: object
       additionalProperties: false
       properties:
+        sessionId:
+          type: string
         palette:
           type: integer
         hueShift:
@@ -1250,6 +1255,11 @@ components:
       properties:
         type:
           const: officeState
+        sessions:
+          description: Session identities for associating runtime characters with Office agents.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeSession'
         storage:
           $ref: '#/components/schemas/OfficeStorageStatus'
         projects:

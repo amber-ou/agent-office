@@ -167,6 +167,11 @@ export interface OfficeLayout {
 
 export interface Character {
   id: number;
+  /** Persistent Office identity; absent for ordinary observed CLI sessions. */
+  officeAgentId?: string;
+  officeStatus?: import('./engine/officeCharacters.js').OfficeCharacterStatus;
+  /** A runtime session already represented by an Office resident. */
+  officeSuppressed?: boolean;
   state: CharacterState;
   dir: Direction;
   /** Pixel position */

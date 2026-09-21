@@ -137,6 +137,20 @@ describe('AgentStateStore', () => {
   });
 
   describe('persistence', () => {
+    it('includes Claude session identity in creation events without mutating the caller', () => {
+      store.set(1, createTestAgent());
+      const emitted = vi.fn();
+      store.on('broadcast', emitted);
+      const message = { type: 'agentCreated', id: 1 };
+      store.broadcast(message);
+      expect(emitted).toHaveBeenCalledWith({ ...message, sessionId: 'sess-1' });
+      expect(message).not.toHaveProperty('sessionId');
+      store.set(1, createTestAgent({ providerId: 'codex' }));
+      emitted.mockClear();
+      store.broadcast(message);
+      expect(emitted).toHaveBeenCalledWith(message);
+    });
+
     it('persist calls adapter.saveAgents with correct shape', () => {
       const adapter = createMockAdapter();
       store.setAdapter(adapter);

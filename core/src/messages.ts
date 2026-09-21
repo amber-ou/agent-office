@@ -108,6 +108,7 @@ export interface ProviderCapabilities {
 export interface AgentCreated {
   type: 'agentCreated';
   id: number;
+  sessionId?: string;
   folderName?: string;
   isExternal?: boolean;
   palette?: number;
@@ -133,6 +134,7 @@ export interface ExistingAgents {
 }
 
 export interface AgentSeatMeta {
+  sessionId?: string;
   palette?: number;
   hueShift?: number;
   seatId?: string;
@@ -352,12 +354,26 @@ export interface AgentDiagnostics {
 
 export interface OfficeState {
   type: 'officeState';
+  sessions?: OfficeSession[];
   storage: OfficeStorageStatus;
   projects: OfficeProject[];
   agents: OfficeAgent[];
   memberships: OfficeMembership[];
   tasks: OfficeTask[];
   activeProjectId?: string;
+}
+
+export interface OfficeSession {
+  id: string;
+  agentId: string;
+  projectId: string;
+  taskId?: string;
+  provider: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+  error?: string;
+  providerSessionId?: string;
 }
 
 export interface OfficeStorageStatus {
@@ -489,19 +505,6 @@ export interface OfficeProjectKnowledge {
   contentReadable?: boolean;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface OfficeSession {
-  id: string;
-  agentId: string;
-  projectId: string;
-  taskId?: string;
-  provider: string;
-  status: string;
-  startedAt: string;
-  endedAt?: string;
-  error?: string;
-  providerSessionId?: string;
 }
 
 export interface OfficeOutput {

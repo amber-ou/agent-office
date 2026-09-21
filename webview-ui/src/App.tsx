@@ -69,6 +69,7 @@ function App() {
 
   const {
     agents,
+    officeAgents,
     selectedAgent,
     agentTools,
     agentStatuses,
@@ -237,6 +238,12 @@ function App() {
   const handleClick = useCallback((agentId: number) => {
     // If clicked agent is a sub-agent, focus the parent's terminal instead
     const os = getOfficeState();
+    const officeAgentId = os.characters.get(agentId)?.officeAgentId;
+    if (officeAgentId) {
+      setIsOfficeOpen(true);
+      transport.send({ type: 'requestAgentDetail', agentId: officeAgentId });
+      return;
+    }
     const meta = os.subagentMeta.get(agentId);
     const focusId = meta ? meta.parentAgentId : agentId;
     transport.send({ type: 'focusAgent', id: focusId });
@@ -429,7 +436,7 @@ function App() {
 
           <ToolOverlay
             officeState={officeState}
-            agents={agents}
+            agents={[...agents, ...officeAgents]}
             agentTools={agentTools}
             subagentTools={subagentTools}
             subagentCharacters={subagentCharacters}

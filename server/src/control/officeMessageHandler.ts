@@ -499,7 +499,9 @@ export class OfficeSession {
   ): void {
     this.runSubscription?.();
     const onChange = (change: RunChange): void => {
-      void this.sendProjectDetail(service, send)
+      void this.buildState(service)
+        .then((state) => send(asWire(state)))
+        .then(() => this.sendProjectDetail(service, send))
         .then(() => {
           if (change.session.status === 'ended' || change.session.status === 'failed') {
             this.runSubscription?.();
@@ -526,6 +528,7 @@ export class OfficeSession {
       storage: officeStorageStatus(),
       projects: snapshot.projects.map(toOfficeProject),
       agents: snapshot.agents.map(toOfficeAgent),
+      sessions: snapshot.sessions.map(toOfficeSession),
       memberships: snapshot.memberships.map(toOfficeMembership),
       tasks: snapshot.tasks.map(toOfficeTask),
       ...(snapshot.activeProjectId ? { activeProjectId: snapshot.activeProjectId } : {}),
