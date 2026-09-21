@@ -575,7 +575,8 @@ export interface AgentCallLogEntry {
   updatedAt: string;
 }
 
-export type AgentCallStatus = 'running' | 'waiting_response' | 'ended' | 'failed' | 'unknown';
+export type AgentCallStatus =
+  'running' | 'waiting_response' | 'ended' | 'failed' | 'unknown' | 'background_not_tracked';
 
 export interface AgentCallUsage {
   inputTokens: number;

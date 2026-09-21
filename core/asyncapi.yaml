@@ -2289,9 +2289,14 @@ components:
         path in this version reaches it. ended / failed: a confirmed
         terminal outcome. unknown: was open when the server that was
         tracking it stopped, and no confirmed end ever arrived — never
-        promoted to ended/failed on a guess.
+        promoted to ended/failed on a guess. background_not_tracked: the
+        spawn turned out to be an async/background launch (its tool_result
+        was a launch acknowledgment, not a real result) — this version does
+        not observe a background spawn's actual completion, so this is set
+        once and never promoted to ended/failed on a guess either.
       type: string
-      enum: [running, waiting_response, ended, failed, unknown]
+      enum:
+        [running, waiting_response, ended, failed, unknown, background_not_tracked]
 
     AgentCallLogEntry:
       description: One observed call to a CC subagent (the Task tool's subagent_type).

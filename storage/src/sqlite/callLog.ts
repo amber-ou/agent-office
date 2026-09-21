@@ -16,7 +16,12 @@ import type {
 import type { Row, SqliteDatabase } from './database.js';
 
 const OPEN_STATUSES: readonly AgentCallStatus[] = ['running', 'waiting_response'];
-const TERMINAL_STATUSES: readonly AgentCallStatus[] = ['ended', 'failed', 'unknown'];
+const TERMINAL_STATUSES: readonly AgentCallStatus[] = [
+  'ended',
+  'failed',
+  'unknown',
+  'background_not_tracked',
+];
 
 export class SqliteAgentCallLogStore implements AgentCallLogStore {
   constructor(private readonly db: SqliteDatabase) {}

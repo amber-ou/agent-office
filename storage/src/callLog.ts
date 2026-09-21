@@ -29,7 +29,15 @@ export type AgentCallStatus =
    *  lost the session, and no confirmed end event ever arrived. Never
    *  silently promoted to 'ended' — the shutdown moment is not a completion
    *  time (see spec: restart must not fabricate a done task). */
-  | 'unknown';
+  | 'unknown'
+  /** The spawn's tool_result was an async launch acknowledgment ("Async
+   *  agent launched successfully..."), not a real result — this version has
+   *  no way to observe the actual completion of a background/async spawn
+   *  (it happens, if at all, in a separately shadow-watched transcript this
+   *  layer never sees). Set once, at the moment that acknowledgment is
+   *  observed, and never overwritten — explicitly distinct from 'unknown'
+   *  (which means a lost connection, not an untracked call shape). */
+  | 'background_not_tracked';
 
 export interface AgentCallUsage {
   /** Fresh (non-cached) prompt tokens summed over the call's turns. */

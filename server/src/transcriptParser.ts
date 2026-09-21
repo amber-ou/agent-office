@@ -120,6 +120,24 @@ export function setTaskCallEndedCallback(cb: ((info: TaskCallEndInfo) => void) |
   taskCallEndedCallback = cb;
 }
 
+/**
+ * The spawn's tool_result turned out to be an async launch acknowledgment
+ * ("Async agent launched successfully...", see `isAsyncAgentResult`), not a
+ * real completion — this call's actual end (if any) is not observed by this
+ * version. Fired instead of `taskCallEndedCallback`, never both.
+ */
+export interface TaskCallBackgroundInfo {
+  agentId: number;
+  parentSessionId: string;
+  toolUseId: string;
+}
+let taskCallBackgroundCallback: ((info: TaskCallBackgroundInfo) => void) | null = null;
+export function setTaskCallBackgroundCallback(
+  cb: ((info: TaskCallBackgroundInfo) => void) | null,
+): void {
+  taskCallBackgroundCallback = cb;
+}
+
 /** Format a tool status line. Delegates to the active HookProvider's formatToolStatus.
  *  Invariant: a provider is registered before any transcript lines are parsed. */
 export function formatToolStatus(toolName: string, input: Record<string, unknown>): string {
@@ -203,11 +221,22 @@ export function processTranscriptLine(
             if (!exemptTools().has(toolName)) {
               hasNonExemptTool = true;
             }
-            // Call-log capture: only the Task tool's subagent_type names an
-            // agent identity directly in the tool input. `agent.sessionId` is
-            // the real Claude session id (the call log's identity), never the
-            // process-local runtime agentId.
-            if (toolName === 'Task' && typeof block.input?.['subagent_type'] === 'string') {
+            // Call-log capture: a foreground subagent delegation names its
+            // agent identity via `subagent_type` on the spawn tool's input.
+            // The tool is called `Task` on older CLI builds and `Agent` on
+            // current ones (CLAUDE.md's provider table) — both are accepted,
+            // since which one a given install emits is a CLI-version fact
+            // this code cannot assume. A `name` field alongside
+            // `subagent_type` marks a teammate-to-be (see `isTeammateSpawn`
+            // just below) — a persistent character tracked by the existing
+            // team mechanism, not a bounded call, so it is excluded here.
+            // `agent.sessionId` is the real Claude session id (the call
+            // log's identity), never the process-local runtime agentId.
+            if (
+              (toolName === 'Task' || toolName === 'Agent') &&
+              typeof block.input?.['subagent_type'] === 'string' &&
+              typeof block.input?.['name'] !== 'string'
+            ) {
               taskCallStartedCallback?.({
                 agentId,
                 parentSessionId: agent.sessionId,
@@ -384,6 +413,20 @@ export function processTranscriptLine(
                 console.log(
                   `[Pixel Agents] Agent ${agentId} background agent launched: ${completedToolId}`,
                 );
+                // This "result" is a launch acknowledgment, not a real
+                // completion — the spawn's actual end is observed (if at
+                // all) via its own shadow-watched transcript, never here.
+                // Recording it as `ended` would be exactly the fabricated
+                // completion time the call log must never produce, so a
+                // call started for this tool_use (i.e. one not excluded as
+                // a teammate-to-be) is instead marked explicitly untracked.
+                if (!agent.teammateSpawnToolIds?.has(completedToolId)) {
+                  taskCallBackgroundCallback?.({
+                    agentId,
+                    parentSessionId: agent.sessionId,
+                    toolUseId: completedToolId,
+                  });
+                }
                 agent.backgroundAgentToolIds.add(completedToolId);
                 // Current harnesses OMIT run_in_background from the tool_use
                 // input, so the spawn's original agentToolStart went out
@@ -412,7 +455,10 @@ export function processTranscriptLine(
               console.log(
                 `[Pixel Agents] JSONL: Agent ${agentId} - tool done: ${block.tool_use_id}`,
               );
-              if (completedToolName === 'Task') {
+              if (
+                (completedToolName === 'Task' || completedToolName === 'Agent') &&
+                !agent.teammateSpawnToolIds?.has(completedToolId)
+              ) {
                 taskCallEndedCallback?.({
                   agentId,
                   parentSessionId: agent.sessionId,

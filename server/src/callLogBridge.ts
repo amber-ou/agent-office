@@ -10,8 +10,16 @@ import type { AgentCall } from '../../storage/src/index.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import { getOfficeStorage } from './control/officeStorage.js';
 import { resolveNativeAgentByName, scanNativeAgentRoster } from './nativeAgentRoster.js';
-import type { TaskCallEndInfo, TaskCallStartInfo } from './transcriptParser.js';
-import { setTaskCallEndedCallback, setTaskCallStartedCallback } from './transcriptParser.js';
+import type {
+  TaskCallBackgroundInfo,
+  TaskCallEndInfo,
+  TaskCallStartInfo,
+} from './transcriptParser.js';
+import {
+  setTaskCallBackgroundCallback,
+  setTaskCallEndedCallback,
+  setTaskCallStartedCallback,
+} from './transcriptParser.js';
 
 const debug = process.env.PIXEL_AGENTS_DEBUG !== '0';
 
@@ -70,6 +78,22 @@ export function installCallLogBridge(store: AgentStateStore): void {
       })
       .catch((err) => {
         console.error('[Agent Office] Call log: failed to record call end:', err);
+      });
+  });
+
+  setTaskCallBackgroundCallback((info: TaskCallBackgroundInfo) => {
+    const storage = getOfficeStorage();
+    if (!storage) return;
+    // No `end()` here: this call's real completion isn't observed, so no
+    // `endedAt` is ever recorded for it — only the status changes, to say so.
+    void storage.callLog
+      .markStatus(info.parentSessionId, info.toolUseId, 'background_not_tracked')
+      .then(() => storage.callLog.get(info.parentSessionId, info.toolUseId))
+      .then((call) => {
+        if (call) store.broadcast({ type: 'agentCallUpdated', call: toWireCall(call) });
+      })
+      .catch((err) => {
+        console.error('[Agent Office] Call log: failed to mark call background-untracked:', err);
       });
   });
 }

@@ -28,6 +28,7 @@ const STATUS_LABELS: Record<AgentCallStatus, string> = {
   ended: '已結束',
   failed: '失敗',
   unknown: '狀態未知',
+  background_not_tracked: '背景委派（本版未追蹤結果）',
 };
 
 const rowClass = 'border-b border-border last:border-0';
@@ -52,8 +53,10 @@ function formatDuration(ms: number): string {
 }
 
 /** Live for a running call (ticks against `now`); fixed once a call ends.
- *  Never claims a duration when the start time itself is unknown. */
+ *  Never claims a duration when the start time itself is unknown, and never
+ *  computes one against "now" for a call whose real end isn't observed. */
 function durationLabel(call: AgentCallLogEntry, now: number): string {
+  if (call.status === 'background_not_tracked') return '未追蹤（背景委派）';
   if (call.startUnknown || !call.startedAt) {
     return call.status === 'unknown' ? '未知' : '開始時間未知';
   }

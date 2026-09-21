@@ -20,12 +20,31 @@ Agent、指派工作；Office 只觀測並顯示。** 沿用既有像素辦公�
 
 ## 2. 呼叫觀測：目前唯一支援的路徑
 
-**只支援「CC 對話中以 `Task` 工具委派子 Agent（`subagent_type` 參數）」這一種呼叫方式。**
+**只支援「CC 對話中委派子 Agent（`subagent_type` 參數）」這一種呼叫方式。**
 
-- 觀測點在 `server/src/transcriptParser.ts`：讀到 `Task` 工具的 `tool_use` 區塊時，取
+- 觀測點在 `server/src/transcriptParser.ts`：讀到委派子 Agent 的 `tool_use` 區塊時，取
   `subagent_type`（Agent 名稱）、`prompt`（完整任務文字）、`description`（簡短標題）與
   該區塊穩定的 JSONL `tool_use` id；讀到對應的 `tool_result` 時視為呼叫結束
   （`is_error` 決定「已結束」或「失敗」）。
+- **工具名稱同時接受 `Task` 與 `Agent`**：依 `CLAUDE.md` 本身的說明，較舊的 CLI
+  版本用 `Task`、目前版本用 `Agent`（同一顆按鈕，不同版本叫不同名字），兩者都會被解析
+  （`server/__tests__/callLogCapture.test.ts` 兩者都有測試）。若你實際使用的版本用了
+  這兩個名稱以外的第三種名字，清單會靜默漏掉那次呼叫——這是目前唯一已知、且沒有把握
+  涵蓋所有版本的風險點；若第一次真人驗收沒看到紀錄，這是第一個要懷疑的地方（可對照你
+  本機 transcript 該筆 `tool_use.name` 實際的值）。
+- **排除已由既有機制追蹤的 Teammate 產生方式**：`Agent` 工具呼叫若額外帶
+  `name` 欄位（新版隱性 Team／`run_in_background` 具名產生的 Teammate），視為既有的
+  常駐 Teammate 角色，不重複記成一次「呼叫」——這類會話本來就有自己獨立的持續存在人物，
+  不是一次有始有終的委派。**已知殘留角落**：極少數新版「隱性 Team」（Claude 5，背景
+  預設啟動、`tool_use` 當下沒有 `name`，要等到 `tool_result` 才帶出
+  `agent_id: <name>@<team>`）在起始當下會先被記成一筆呼叫，之後才被既有 Team 機制
+  識別為 Teammate；這種情況下清單可能把它標成「已結束」而非正確排除，屬已知但影響
+  範圍很小的邊界情況，本輪未特別處理。
+- **背景／非同步委派**：某些委派會立刻收到「Async agent launched successfully...」
+  這類啟動確認，而不是真正的執行結果——這種委派的真正完成（如果有）發生在另一個
+  Office 目前不會讀取的 transcript 裡。遇到這種情況，清單會把狀態標成
+  **「背景委派（本版未追蹤結果）」**（`background_not_tracked`），**不會**補上假的
+  結束時間或誤判成「已結束」。
 - **不支援**：使用者另外以 `claude --agent <name>` 啟動的獨立會話。目前的 hooks／
   transcript 事件沒有任何欄位會帶出啟動時使用的 `--agent` 名稱，Office
   無法可靠地把這種會話與某個原生 Agent 對應起來，所以刻意不做——寧可不顯示，也不
@@ -56,15 +75,20 @@ Agent、指派工作；Office 只觀測並顯示。** 沿用既有像素辦公�
   的，未使用 transcript 內部欄位，因為既有程式從未依賴過該欄位的存在與格式）。
   沒有更早的真實開始時間可補時，`startUnknown: true`，前端顯示「開始時間未知」，
   不假裝有完整時長。
-- 狀態只有 `running → ended｜failed`，加上重啟安全網的 `unknown`
-  （`markOpenCallsUnknown`，見下）。`waiting_response` 保留給以後可能支援、能夠獨立
-  暫停等待輸入的呼叫方式；本輪唯一支援的 `Task` 工具呼叫是同步的，永遠不會進入這個
-  狀態。
+- 狀態有 `running → ended｜failed｜background_not_tracked`，加上重啟安全網的
+  `unknown`（`markOpenCallsUnknown`，見下）。`waiting_response` 保留給以後可能支援、
+  能夠獨立暫停等待輸入的呼叫方式；本輪唯一支援的同步委派永遠不會進入這個狀態。
+  `background_not_tracked` 與 `unknown` 意義不同且不可互換：前者是「一開始就看出這是
+  背景委派，本版本來就不追蹤它的完成」，後者是「本來以為還在追蹤，但伺服器重啟／
+  失去連線，不確定它後來怎麼樣了」——兩者都不會補上 `endedAt`。
 - 重啟／連線中斷：伺服器啟動時，任何仍是 `running`／`waiting_response` 的紀錄一律
   轉為 `unknown`，**不**補上 `endedAt`（不把關閉時刻當作完成時間）。前端對 `unknown`
-  顯示「未知（連線中斷）」，不是「已結束」。
+  顯示「未知（連線中斷）」，不是「已結束」；`background_not_tracked` 不受重啟影響
+  （它從一開始就不在 `running`／`waiting_response` 之列），顯示「背景委派（本版未追蹤
+  結果）」。
 - 重複／晚到事件：`start()`／`end()`／`markStatus()` 都以 `(parentSessionId, toolUseId)`
-  去重複；已是終態（`ended`／`failed`／`unknown`）的紀錄不會被稍後的事件覆寫或「復活」。
+  去重複；已是終態（`ended`／`failed`／`unknown`／`background_not_tracked`）的紀錄
+  不會被稍後的事件覆寫或「復活」。
 - 同一 Agent 同時多筆呼叫：以個別 `toolUseId` 分開追蹤，其中一筆結束不會把人物或其餘
   呼叫誤判為待命／已結束（見 `webview-ui/test/officeCharacters.test.ts` 的並行測試）。
 
@@ -133,8 +157,19 @@ npm run test:server
 - `storage/__tests__/nativeAgentDiscovery.test.ts`：roster 掃描、名稱衝突標記。
 - `storage/__tests__/callLog.test.ts`：呼叫的建立／去重複／結束／狀態不復活／重啟安全網／
   usage 寫入。
+- `server/__tests__/callLogCapture.test.ts`：`transcriptParser.ts` 的觀測點本身——
+  `Task`／`Agent` 兩種工具名稱都會被解析、帶 `name` 的 Teammate 產生方式不會被誤記成
+  一次呼叫、正常結果標記結束、非同步啟動確認標記 `background_not_tracked` 而非結束。
+- `server/__tests__/callLogBridge.test.ts`：從一行模擬的 transcript 記錄開始，經
+  `installCallLogBridge` 寫入真的（暫存）SQLite、比對真的（暫存）`~/.claude/agents`
+  名單解析身分、到 `agentCallUpdated` 廣播——涵蓋「觀測事件能不能真的傳到資料庫與前端
+  訊息」這條完整路徑，不是只測其中一段。
 - `webview-ui/test/officeCharacters.test.ts`（改寫）：待命人物、roster 增減不重複、
   呼叫開始／結束切換工作狀態、未辨識呼叫不建立人物、並行呼叫互不影響、快照重置。
+
+這些測試合起來涵蓋「觀測事件 → 資料庫 → 廣播 → 前端人物／清單」整條路徑的每一段，
+但仍不是真的啟動 Claude 或開瀏覽器的端對端測試——第 2 節列出的觀測缺口與已知邊界
+情況，仍需要下面的 Windows 真人驗收才能確認。
 
 `server/__tests__/claudeHookInstaller.test.ts` 的「目錄不可寫入」一項在以 root 執行測試
 的環境下會失敗（root 略過檔案權限檢查），這是執行環境本身的限制，與本輪修改無關，換一般
