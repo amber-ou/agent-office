@@ -158,6 +158,7 @@ export class OfficeState {
 
     // First pass: try to keep characters at their existing seats
     for (const ch of this.characters.values()) {
+      if (ch.officeSuppressed) continue;
       if (ch.seatId && this.seats.has(ch.seatId)) {
         const seat = this.seats.get(ch.seatId)!;
         if (!seat.assigned) {
@@ -178,6 +179,7 @@ export class OfficeState {
 
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
+      if (ch.officeSuppressed) continue;
       if (ch.seatId) continue;
       const seatId = this.findFreeSeat(ch.folderName);
       if (seatId) {
@@ -564,6 +566,26 @@ export class OfficeState {
     // Start despawn animation instead of immediate delete
     startMatrixEffect(ch, 'despawn');
     ch.bubbleType = null;
+  }
+
+  /** Keep observed activity available without drawing a second resident or occupying a desk. */
+  setOfficeSuppressed(id: number, suppressed: boolean): void {
+    const ch = this.characters.get(id);
+    if (!ch || !!ch.officeSuppressed === suppressed) return;
+    ch.officeSuppressed = suppressed;
+    if (suppressed) {
+      if (ch.seatId) {
+        const seat = this.seats.get(ch.seatId);
+        if (seat) seat.assigned = false;
+      }
+      ch.seatId = null;
+      ch.path = [];
+      if (this.selectedAgentId === id) this.selectedAgentId = null;
+      if (this.cameraFollowId === id) this.cameraFollowId = null;
+    } else {
+      const seatId = this.findFreeSeat(ch.folderName);
+      if (seatId) this.reassignSeat(id, seatId);
+    }
   }
 
   /** Find seat uid at a given tile position, or null */
@@ -1108,6 +1130,7 @@ export class OfficeState {
         if (effect === 'despawned') toDelete.push(ch.id);
         continue; // skip normal FSM while the effect is (or just was) active
       }
+      if (ch.officeSuppressed) continue;
 
       // Temporarily unblock own seat so character can pathfind to it
       this.withOwnSeatUnblocked(ch, () =>
@@ -1153,7 +1176,7 @@ export class OfficeState {
   > {
     const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
     for (const ch of this.characters.values()) {
-      if (ch.isSubagent) continue;
+      if (ch.isSubagent || ch.officeAgentId || ch.officeSuppressed) continue;
       seats[ch.id] = { palette: ch.palette, hueShift: ch.hueShift, seatId: ch.seatId };
     }
     return seats;
@@ -1163,7 +1186,7 @@ export class OfficeState {
    *  is up, the consent greeter. This is the ONE place the greeter joins the
    *  agents — every other consumer reads `characters` and gets agents only. */
   getCharacters(): Character[] {
-    const chars = Array.from(this.characters.values());
+    const chars = Array.from(this.characters.values()).filter((ch) => !ch.officeSuppressed);
     if (this.greeter) chars.push(this.greeter);
     return chars;
   }
@@ -1174,6 +1197,7 @@ export class OfficeState {
   getCharacterAt(worldX: number, worldY: number): number | null {
     const chars = Array.from(this.characters.values()).sort((a, b) => b.y - a.y);
     for (const ch of chars) {
+      if (ch.officeSuppressed) continue;
       // Skip characters that are despawning
       if (ch.matrixEffect === 'despawn') continue;
       // Character sprite is 16x24, anchored bottom-center

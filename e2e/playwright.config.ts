@@ -11,6 +11,8 @@ const htmlReportDir = namespaceE2EPath(path.join(__dirname, '../playwright-repor
 
 export default defineConfig({
   testDir: path.join(__dirname, 'tests'),
+  // Browser contract tests own a lightweight Vite server and separate config.
+  testIgnore: ['browser/**'],
   timeout: 120_000,
   globalSetup: path.join(__dirname, 'global-setup.ts'),
   reporter: [

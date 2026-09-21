@@ -18,6 +18,7 @@ import {
   TOOL_OVERLAY_VERTICAL_OFFSET,
 } from '../../constants.js';
 import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js';
+import { OFFICE_CHARACTER_LABELS } from '../engine/officeCharacters.js';
 import type { OfficeState } from '../engine/officeState.js';
 import { overlayProjection } from '../projection.js';
 import type { ToolActivity } from '../types.js';
@@ -124,14 +125,14 @@ export function ToolOverlay({
     <>
       {allIds.map((id) => {
         const ch = officeState.characters.get(id);
-        if (!ch) return null;
+        if (!ch || ch.officeSuppressed) return null;
 
         const isSelected = selectedId === id;
         const isHovered = hoveredId === id;
         const isSub = ch.isSubagent;
 
         // Only show for hovered or selected agents (unless always-show is on)
-        if (!alwaysShowOverlay && !isSelected && !isHovered) return null;
+        if (!alwaysShowOverlay && !isSelected && !isHovered && !ch.officeAgentId) return null;
 
         // Position above character
         const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
@@ -186,6 +187,8 @@ export function ToolOverlay({
             ch.waitingAwaitingInput ?? false,
           );
         }
+
+        if (ch.officeStatus) activityText = OFFICE_CHARACTER_LABELS[ch.officeStatus];
 
         // Determine dot color
         const tools = agentTools[id];
@@ -260,7 +263,7 @@ export function ToolOverlay({
                   </span>
                 )}
               </div>
-              {isSelected && !isSub && (
+              {isSelected && !isSub && !ch.officeAgentId && (
                 <Button
                   variant="ghost"
                   size="icon"

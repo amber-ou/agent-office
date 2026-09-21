@@ -4,6 +4,7 @@ import type { HooksConsentRequest } from '../../../core/src/messages.js';
 import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notificationSound.js';
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
+import { OfficeCharacters } from '../office/engine/officeCharacters.js';
 import type { OfficeState } from '../office/engine/officeState.js';
 import { setGhostHeadlessAgents as setRendererGhostHeadlessAgents } from '../office/engine/renderer.js';
 import { setFloorSprites } from '../office/floorTiles.js';
@@ -70,6 +71,7 @@ export interface WorkspaceFolder {
 
 interface ExtensionMessageState {
   agents: number[];
+  officeAgents: number[];
   selectedAgent: number | null;
   agentTools: Record<number, ToolActivity[]>;
   agentStatuses: Record<number, string>;
@@ -122,6 +124,7 @@ export function useExtensionMessages(
   isEditDirty?: () => boolean,
 ): ExtensionMessageState {
   const [agents, setAgents] = useState<number[]>([]);
+  const [officeAgents, setOfficeAgents] = useState<number[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<number | null>(null);
   const [agentTools, setAgentTools] = useState<Record<number, ToolActivity[]>>({});
   const [agentStatuses, setAgentStatuses] = useState<Record<number, string>>({});
@@ -174,6 +177,7 @@ export function useExtensionMessages(
   useEffect(() => {
     // Buffer agents from existingAgents until layout is loaded
     let pendingAgents: PendingAgent[] = [];
+    const officeCharacters = new OfficeCharacters();
 
     // Accumulate distinct folderNames seen across agents (never removed during the
     // session): the source for the Areas folder-mapping dropdown, so a folder stays
@@ -186,6 +190,7 @@ export function useExtensionMessages(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handler = (msg: any) => {
       const os = getOfficeState();
+      officeCharacters.receive(msg);
       // CI / e2e diagnostic: record every received transport message on the
       // window-side log. The fixture reads window.__pixelAgentsTestHooks.
       // messageLog and attaches as JSON so CI failures can see the exact
@@ -736,6 +741,12 @@ export function useExtensionMessages(
         const id = msg.id as number;
         os.setAgentContext(id, msg.contextTokens as number, msg.maxContextTokens as number);
       }
+      const residents = officeCharacters.sync(os, layoutReadyRef.current);
+      setOfficeAgents((prev) =>
+        prev.length === residents.length && prev.every((id, index) => id === residents[index])
+          ? prev
+          : residents,
+      );
     };
     const unsubscribe = transport.onMessage(handler);
     transport.send({ type: 'webviewReady' });
@@ -760,6 +771,7 @@ export function useExtensionMessages(
 
   return {
     agents,
+    officeAgents,
     selectedAgent,
     agentTools,
     agentStatuses,

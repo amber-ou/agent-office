@@ -68,6 +68,7 @@ import { awaitAgentFileMigration, awaitCcBridge, runCcBridgeSync } from './offic
 const DEFAULT_DEPS: DomainDeps = { ids: uuidIdGenerator, clock: systemClock };
 
 export interface OfficeSnapshot {
+  sessions: AgentSession[];
   projects: Project[];
   /** Every agent: they are global, not owned by the active project. */
   agents: AgentDefinition[];
@@ -244,15 +245,18 @@ export class OfficeService {
       activeProjectId && projects.some((p) => p.id === activeProjectId)
         ? activeProjectId
         : undefined;
+    const sessions = (
+      await Promise.all(agents.map((agent) => this.repos.sessions.listByAgent(agent.id)))
+    ).flat();
 
     if (!active) {
-      return { projects, agents, memberships: [], tasks: [] };
+      return { projects, agents, memberships: [], tasks: [], sessions };
     }
     const [memberships, tasks] = await Promise.all([
       this.repos.projectAgents.listByProject(active),
       this.repos.tasks.listByProject(active),
     ]);
-    return { projects, agents, memberships, tasks, activeProjectId: active };
+    return { projects, agents, memberships, tasks, sessions, activeProjectId: active };
   }
 
   // ── Commands ───────────────────────────────────────────────────

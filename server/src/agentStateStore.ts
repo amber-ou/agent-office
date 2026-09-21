@@ -134,6 +134,12 @@ export class AgentStateStore {
   // ── Broadcast (replaces direct webview.postMessage in server/) ─
 
   broadcast(message: Record<string, unknown>): void {
+    if (message.type === 'agentCreated' && typeof message.id === 'number') {
+      const agent = this.agents.get(message.id);
+      if (agent?.sessionId && (!agent.providerId || agent.providerId === 'claude')) {
+        message = { ...message, sessionId: agent.sessionId };
+      }
+    }
     debugLogBroadcast(message);
     this.emitter.emit('broadcast', message);
   }
