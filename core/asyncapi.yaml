@@ -1,0 +1,2206 @@
+# NOTE: pinned to 3.0.0 deliberately. @asyncapi/modelina v5.10.1 hardcodes
+# `supportedVersions: ['3.0.0']` in its AsyncAPIInputProcessor. Bumping to
+# 3.1.0 makes Modelina fall through to a generic JSON-schema parser that emits
+# only `export type Root = any` instead of our 52 named interfaces. Bump when
+# Modelina adds 3.1.0 support; the upgrade is `npx asyncapi convert` + a regen.
+# `npm run asyncapi:validate` will keep emitting an info note recommending 3.1.0;
+# that's expected and harmless until Modelina catches up.
+asyncapi: 3.0.0
+info:
+  title: Pixel Agents Protocol
+  version: 1.0.0
+  description: |
+    Bidirectional WebSocket protocol between the Pixel Agents server and any UI client
+    (the bundled VS Code webview, the standalone browser SPA, or future third-party
+    clients). The server watches AI-coding-agent transcripts, parses tool activity, 
+    owns office layout, and streams events to all connected clients. 
+    Clients send commands to launch agents, save layout, and toggle settings.
+
+    The protocol is provider-agnostic: a HookProvider implementation defines how raw
+    CLI events are normalized to the AgentEvent shape, which the server translates
+    into ServerMessage broadcasts.
+  license:
+    name: MIT
+  contact:
+    name: Pixel Agents
+    url: https://github.com/pablodelucca/pixel-agents
+
+servers:
+  local:
+    host: 127.0.0.1:3100
+    protocol: ws
+    description: Local Pixel Agents server (default port 3100)
+    pathname: /ws
+
+channels:
+  ws:
+    address: /ws
+    description: |
+      Single bidirectional channel. The server pushes ServerMessage events on agent
+      lifecycle, tool activity, asset loading, and settings. Clients send
+      ClientMessage commands.
+    messages:
+      ServerMessage:
+        $ref: '#/components/messages/ServerMessage'
+      ClientMessage:
+        $ref: '#/components/messages/ClientMessage'
+
+operations:
+  receiveServerMessage:
+    action: receive
+    channel:
+      $ref: '#/channels/ws'
+    messages:
+      - $ref: '#/channels/ws/messages/ServerMessage'
+  sendClientMessage:
+    action: send
+    channel:
+      $ref: '#/channels/ws'
+    messages:
+      - $ref: '#/channels/ws/messages/ClientMessage'
+
+components:
+  messages:
+    ServerMessage:
+      title: Server-to-client message
+      summary: Any message broadcast by the server to connected clients.
+      payload:
+        $ref: '#/components/schemas/ServerMessage'
+    ClientMessage:
+      title: Client-to-server message
+      summary: Any command sent by a client to the server.
+      payload:
+        $ref: '#/components/schemas/ClientMessage'
+
+  schemas:
+    # ── Top-level discriminated unions ────────────────────────────
+
+    ServerMessage:
+      oneOf:
+        # Provider capabilities
+        - $ref: '#/components/schemas/ProviderCapabilities'
+        # Agent lifecycle
+        - $ref: '#/components/schemas/AgentCreated'
+        - $ref: '#/components/schemas/AgentClosed'
+        - $ref: '#/components/schemas/AgentSelected'
+        - $ref: '#/components/schemas/ExistingAgents'
+        # Agent status / tool activity
+        - $ref: '#/components/schemas/AgentStatus'
+        - $ref: '#/components/schemas/AgentToolStart'
+        - $ref: '#/components/schemas/AgentToolDone'
+        - $ref: '#/components/schemas/AgentToolsClear'
+        - $ref: '#/components/schemas/AgentToolPermission'
+        - $ref: '#/components/schemas/AgentToolPermissionClear'
+        # Sub-agent activity
+        - $ref: '#/components/schemas/SubagentToolStart'
+        - $ref: '#/components/schemas/SubagentToolDone'
+        - $ref: '#/components/schemas/SubagentClear'
+        - $ref: '#/components/schemas/SubagentToolPermission'
+        # Agent Teams
+        - $ref: '#/components/schemas/AgentTeamInfo'
+        # Context window
+        - $ref: '#/components/schemas/AgentContextUsage'
+        # Layout
+        - $ref: '#/components/schemas/LayoutLoaded'
+        # Assets
+        - $ref: '#/components/schemas/FurnitureAssetsLoaded'
+        - $ref: '#/components/schemas/CharacterSpritesLoaded'
+        - $ref: '#/components/schemas/PetSpritesLoaded'
+        - $ref: '#/components/schemas/FloorTilesLoaded'
+        - $ref: '#/components/schemas/WallTilesLoaded'
+        - $ref: '#/components/schemas/CarpetTilesLoaded'
+        # Settings & config
+        - $ref: '#/components/schemas/SettingsLoaded'
+        - $ref: '#/components/schemas/HooksStatus'
+        - $ref: '#/components/schemas/HooksConsentRequest'
+        - $ref: '#/components/schemas/ExternalAssetDirectoriesUpdated'
+        - $ref: '#/components/schemas/AreaMappingsLoaded'
+        - $ref: '#/components/schemas/WorkspaceFolders'
+        # Diagnostics
+        - $ref: '#/components/schemas/AgentDiagnostics'
+        # Agent Office control plane
+        - $ref: '#/components/schemas/OfficeState'
+        - $ref: '#/components/schemas/OfficeError'
+        - $ref: '#/components/schemas/AgentDetail'
+        - $ref: '#/components/schemas/ProjectDetail'
+        - $ref: '#/components/schemas/OutputContent'
+      discriminator: type
+
+    ClientMessage:
+      oneOf:
+        - $ref: '#/components/schemas/WebviewReady'
+        - $ref: '#/components/schemas/LaunchAgent'
+        - $ref: '#/components/schemas/FocusAgent'
+        - $ref: '#/components/schemas/CloseAgent'
+        - $ref: '#/components/schemas/SaveAgentSeats'
+        - $ref: '#/components/schemas/SaveLayout'
+        - $ref: '#/components/schemas/SetSoundEnabled'
+        - $ref: '#/components/schemas/SetLastSeenVersion'
+        - $ref: '#/components/schemas/SetAlwaysShowLabels'
+        - $ref: '#/components/schemas/SetGhostHeadlessAgents'
+        - $ref: '#/components/schemas/SetHooksEnabled'
+        - $ref: '#/components/schemas/HooksConsentResponse'
+        - $ref: '#/components/schemas/SetHooksInfoShown'
+        - $ref: '#/components/schemas/SetWatchAllSessions'
+        - $ref: '#/components/schemas/ExportLayout'
+        - $ref: '#/components/schemas/ImportLayout'
+        - $ref: '#/components/schemas/OpenSessionsFolder'
+        - $ref: '#/components/schemas/AddExternalAssetDirectory'
+        - $ref: '#/components/schemas/RemoveExternalAssetDirectory'
+        - $ref: '#/components/schemas/SaveAreaMappings'
+        - $ref: '#/components/schemas/SetShowAreas'
+        - $ref: '#/components/schemas/RequestDiagnostics'
+        # Agent Office control plane
+        - $ref: '#/components/schemas/RequestOffice'
+        - $ref: '#/components/schemas/CreateProject'
+        - $ref: '#/components/schemas/SetActiveProject'
+        - $ref: '#/components/schemas/CreateAgent'
+        - $ref: '#/components/schemas/AddAgentToProject'
+        - $ref: '#/components/schemas/RemoveAgentFromProject'
+        - $ref: '#/components/schemas/CreateTask'
+        # Agent configuration
+        - $ref: '#/components/schemas/RequestAgentDetail'
+        - $ref: '#/components/schemas/UpdateAgent'
+        - $ref: '#/components/schemas/CreateSkill'
+        - $ref: '#/components/schemas/UpdateSkill'
+        - $ref: '#/components/schemas/DeleteSkill'
+        - $ref: '#/components/schemas/CreateAgentKnowledge'
+        - $ref: '#/components/schemas/UpdateAgentKnowledge'
+        - $ref: '#/components/schemas/DeleteAgentKnowledge'
+        - $ref: '#/components/schemas/RequestProjectDetail'
+        - $ref: '#/components/schemas/UpdateProject'
+        - $ref: '#/components/schemas/CreateProjectKnowledge'
+        - $ref: '#/components/schemas/UpdateProjectKnowledge'
+        - $ref: '#/components/schemas/DeleteProjectKnowledge'
+        - $ref: '#/components/schemas/UpdateTask'
+        - $ref: '#/components/schemas/AssignTask'
+        - $ref: '#/components/schemas/UnassignTask'
+        - $ref: '#/components/schemas/SetTaskStatus'
+        - $ref: '#/components/schemas/DeleteTask'
+        - $ref: '#/components/schemas/RunTask'
+        - $ref: '#/components/schemas/CancelTaskRun'
+        - $ref: '#/components/schemas/RequestOutputContent'
+        - $ref: '#/components/schemas/AcceptTask'
+        - $ref: '#/components/schemas/RequestTaskChanges'
+      discriminator: type
+
+    # ── Server message variants ────────────────────────────────────
+
+    ProviderCapabilities:
+      description: |
+        Sent once after `webviewReady`, before any agent messages. Tells the client
+        which tool names should render with the "reading" animation and which spawn
+        sub-agent characters.
+      type: object
+      additionalProperties: false
+      required: [type, readingTools, subagentToolNames]
+      properties:
+        type:
+          const: providerCapabilities
+        readingTools:
+          type: array
+          items:
+            type: string
+          description: Tool names that should render the reading animation (vs typing).
+        subagentToolNames:
+          type: array
+          items:
+            type: string
+          description: Tool names that spawn sub-agent characters (e.g. Task, Agent).
+
+    AgentCreated:
+      description: A new agent has appeared in the office.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentCreated
+        id:
+          type: integer
+        folderName:
+          type: string
+        isExternal:
+          type: boolean
+        palette:
+          type: integer
+          description: Server-assigned character palette index.
+        hueShift:
+          type: integer
+          description: Server-assigned hue shift in degrees (0-360).
+
+    AgentClosed:
+      description: An agent has been removed from the office.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentClosed
+        id:
+          type: integer
+
+    AgentSelected:
+      description: An agent's terminal was focused (VS Code only). UI should highlight it.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentSelected
+        id:
+          type: integer
+
+    ExistingAgents:
+      description: |
+        Snapshot of all current agents. Sent on initial connect and after agent set
+        changes that the client missed. Includes seat/palette assignments.
+      type: object
+      additionalProperties: false
+      required: [type, agents, agentMeta, folderNames, externalAgents]
+      properties:
+        type:
+          const: existingAgents
+        agents:
+          type: array
+          items:
+            type: integer
+        agentMeta:
+          type: object
+          description: Map of agent ID (string) to seat metadata.
+          additionalProperties:
+            $ref: '#/components/schemas/AgentSeatMeta'
+        folderNames:
+          type: object
+          description: Map of agent ID (string) to workspace folder name.
+          additionalProperties:
+            type: string
+        externalAgents:
+          type: object
+          description: Map of agent ID (string) to external flag.
+          additionalProperties:
+            type: boolean
+
+    AgentStatus:
+      description: Active vs waiting state for an agent (drives character animation).
+      type: object
+      additionalProperties: false
+      required: [type, id, status]
+      properties:
+        type:
+          const: agentStatus
+        id:
+          type: integer
+        status:
+          $ref: '#/components/schemas/AgentActivityStatus'
+        awaitingInput:
+          type: boolean
+          description: >-
+            Only meaningful when status is "waiting". True when the agent went
+            idle waiting on the user (drives the "Waiting for input" label);
+            absent/false means the agent finished its turn ("Done").
+
+    AgentActivityStatus:
+      description: Activity state of an agent.
+      type: string
+      enum: [active, waiting]
+
+    AgentToolStart:
+      description: Agent began executing a tool.
+      type: object
+      additionalProperties: false
+      required: [type, id, toolId, status]
+      properties:
+        type:
+          const: agentToolStart
+        id:
+          type: integer
+        toolId:
+          type: string
+        status:
+          type: string
+          description: Human-readable status to display (e.g. "Reading foo.ts").
+        toolName:
+          type: string
+        permissionActive:
+          type: boolean
+        runInBackground:
+          type: boolean
+        isTeammateSpawn:
+          type: boolean
+          description: >-
+            True when this spawn tool call carries a name, making the spawn a
+            Teammate-to-be. The office must not create a Subtask sub-character
+            for it — a teammate character will represent the spawn instead.
+
+    AgentToolDone:
+      description: Agent finished executing a tool.
+      type: object
+      additionalProperties: false
+      required: [type, id, toolId]
+      properties:
+        type:
+          const: agentToolDone
+        id:
+          type: integer
+        toolId:
+          type: string
+
+    AgentToolsClear:
+      description: All foreground tools cleared (turn end). Background agents preserved.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentToolsClear
+        id:
+          type: integer
+
+    AgentToolPermission:
+      description: Permission prompt detected for the agent's current tool.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentToolPermission
+        id:
+          type: integer
+
+    AgentToolPermissionClear:
+      description: Permission prompt resolved.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentToolPermissionClear
+        id:
+          type: integer
+
+    SubagentToolStart:
+      description: Sub-agent (e.g. Task) started a tool.
+      type: object
+      additionalProperties: false
+      required: [type, id, parentToolId, toolId, status]
+      properties:
+        type:
+          const: subagentToolStart
+        id:
+          type: integer
+        parentToolId:
+          type: string
+        toolId:
+          type: string
+        status:
+          type: string
+
+    SubagentToolDone:
+      description: Sub-agent finished a tool.
+      type: object
+      additionalProperties: false
+      required: [type, id, parentToolId, toolId]
+      properties:
+        type:
+          const: subagentToolDone
+        id:
+          type: integer
+        parentToolId:
+          type: string
+        toolId:
+          type: string
+
+    SubagentClear:
+      description: A sub-agent task completed.
+      type: object
+      additionalProperties: false
+      required: [type, id, parentToolId]
+      properties:
+        type:
+          const: subagentClear
+        id:
+          type: integer
+        parentToolId:
+          type: string
+
+    SubagentToolPermission:
+      description: Permission prompt for a sub-agent's tool.
+      type: object
+      additionalProperties: false
+      required: [type, id, parentToolId]
+      properties:
+        type:
+          const: subagentToolPermission
+        id:
+          type: integer
+        parentToolId:
+          type: string
+
+    AgentTeamInfo:
+      description: Agent Teams metadata (lead, teammate, tmux usage).
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentTeamInfo
+        id:
+          type: integer
+        teamName:
+          type: string
+        agentName:
+          type: string
+        isTeamLead:
+          type: boolean
+        leadAgentId:
+          type: integer
+        teamUsesTmux:
+          type: boolean
+
+    AgentContextUsage:
+      description: |
+        How much of the agent's context window is in use, as of its most recent
+        turn. A snapshot, NOT a running total: it falls when the session
+        compacts or clears. `maxContextTokens` is the runtime's best estimate of
+        the window size — transcripts don't state it, so it starts at the
+        default and widens (never shrinks) once a larger context is observed.
+        Sent for every agent, including leads and teammates; sub-agents have no
+        session of their own and never report it.
+      type: object
+      additionalProperties: false
+      required: [type, id, contextTokens, maxContextTokens]
+      properties:
+        type:
+          const: agentContextUsage
+        id:
+          type: integer
+        contextTokens:
+          type: integer
+        maxContextTokens:
+          type: integer
+
+    LayoutLoaded:
+      description: |
+        Office layout (tiles, furniture, colors). `null` when no layout file or
+        bundled default exists. `wasReset` is true when the bundled default
+        replaced an outdated user layout.
+      type: object
+      additionalProperties: false
+      required: [type, layout]
+      properties:
+        type:
+          const: layoutLoaded
+        layout:
+          oneOf:
+            - type: object
+              description: |
+                Opaque layout object (cols, rows, tiles, furniture, tileColors).
+                Format defined by the OfficeLayout schema in webview-ui; not
+                modeled here because it's owned by the rendering layer.
+            - type: 'null'
+        wasReset:
+          type: boolean
+
+    FurnitureAssetsLoaded:
+      description: Furniture catalog and sprite data, sent once after webviewReady.
+      type: object
+      additionalProperties: false
+      required: [type, catalog, sprites]
+      properties:
+        type:
+          const: furnitureAssetsLoaded
+        catalog:
+          type: array
+          items:
+            $ref: '#/components/schemas/FurnitureAssetMessage'
+        sprites:
+          type: object
+          description: Map of furniture asset ID to its sprite (2D hex string array).
+          additionalProperties:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+
+    CharacterSpritesLoaded:
+      description: Pre-colored character sprite sets (6 palettes), sent once at startup.
+      type: object
+      additionalProperties: false
+      required: [type, characters]
+      properties:
+        type:
+          const: characterSpritesLoaded
+        characters:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharacterSpriteSet'
+
+    PetSpritesLoaded:
+      description: Pet sprite frame sets and display names, sent once after webviewReady (between characterSpritesLoaded and floorTilesLoaded).
+      type: object
+      additionalProperties: false
+      required: [type, pets, petNames]
+      properties:
+        type:
+          const: petSpritesLoaded
+        pets:
+          type: array
+          description: One frame-set per loaded pet, indexed by petType.
+          items:
+            $ref: '#/components/schemas/PetSpriteFrameSet'
+        petNames:
+          type: array
+          description: Display names parallel-indexed to `pets` (sourced from each pet's manifest.json).
+          items:
+            type: string
+
+    PetSpriteFrameSet:
+      description: One pet's frames keyed by direction + state. All arrays are 3D hex-string arrays (frames × rows × pixels).
+      type: object
+      additionalProperties: false
+      required: [walkDown, idleDown, walkUp, idleUp, walkRight]
+      properties:
+        walkDown:
+          type: array
+          description: 3 frames at 16×32 pixels.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        idleDown:
+          type: array
+          description: 3 frames at 16×32 pixels.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        walkUp:
+          type: array
+          description: 3 frames at 16×32 pixels.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        idleUp:
+          type: array
+          description: 3 frames at 16×32 pixels.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        walkRight:
+          type: array
+          description: 3 frames at 32×32 pixels.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+
+    FloorTilesLoaded:
+      description: Floor tile sprites (7 patterns).
+      type: object
+      additionalProperties: false
+      required: [type, sprites]
+      properties:
+        type:
+          const: floorTilesLoaded
+        sprites:
+          type: array
+          description: Array of 2D hex string arrays (one per pattern).
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+
+    WallTilesLoaded:
+      description: Wall auto-tile sprite sets (16 bitmask pieces).
+      type: object
+      additionalProperties: false
+      required: [type, sets]
+      properties:
+        type:
+          const: wallTilesLoaded
+        sets:
+          type: array
+          description: Array of wall tile sets; each set is an array of 2D hex string arrays.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: array
+                items:
+                  type: string
+
+    CarpetTilesLoaded:
+      description: Carpet auto-tile sprite sets (16 marching-squares pieces per variant).
+      type: object
+      additionalProperties: false
+      required: [type, sets]
+      properties:
+        type:
+          const: carpetTilesLoaded
+        sets:
+          type: array
+          description: Array of carpet variants; each variant is an array of 2D hex string arrays.
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: array
+                items:
+                  type: string
+
+    SettingsLoaded:
+      description: All persisted user-level settings, sent once on connect.
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - soundEnabled
+        - lastSeenVersion
+        - extensionVersion
+        - watchAllSessions
+        - alwaysShowLabels
+        - ghostHeadlessAgents
+        - hooksEnabled
+        - hooksInfoShown
+        - externalAssetDirectories
+        - showAreas
+      properties:
+        type:
+          const: settingsLoaded
+        soundEnabled:
+          type: boolean
+        lastSeenVersion:
+          type: string
+        extensionVersion:
+          type: string
+        watchAllSessions:
+          type: boolean
+        alwaysShowLabels:
+          type: boolean
+        ghostHeadlessAgents:
+          type: boolean
+        hooksEnabled:
+          type: boolean
+        hooksInfoShown:
+          type: boolean
+        externalAssetDirectories:
+          type: array
+          items:
+            type: string
+        showAreas:
+          type: boolean
+
+    HooksStatus:
+      description: |
+        Actual hook installation state, as opposed to the hooksEnabled
+        preference in SettingsLoaded. The two can disagree: hooksEnabled
+        defaults to true while first-run consent is still pending and nothing
+        is installed yet. Sent after the connect handshake and whenever the
+        install state changes (consent granted, settings toggle, uninstall).
+      type: object
+      additionalProperties: false
+      required: [type, providerId, installed]
+      properties:
+        type:
+          const: hooksStatus
+        providerId:
+          type: string
+          description: >-
+            The hook provider this install state is about (HookProvider.id,
+            e.g. "claude"). Consumers keyed on install state must never mix
+            one provider's status into another's — the Intro's install
+            verdict in particular reads only the provider it asked about.
+        installed:
+          type: boolean
+
+    HooksConsentRequest:
+      description: |
+        Ask this client to run the first-run hooks consent dialog. Sent during the
+        `webviewReady` handshake when the hooks preference is on, consent has not
+        been recorded, and nothing of ours is installed — and, in standalone, only
+        on privileged (tokened) connections, since an untokened spectator could not
+        act on it anyway (its `hooksConsentResponse` would be ignored).
+
+        Carries the provider being asked about and its disclosure copy so the
+        client renders the server's exact terms (the provider's
+        consentDisclosure(), shared with no client-side duplicate to drift).
+        The client answers with `hooksConsentResponse`, echoing the providerId;
+        dismissing the dialog sends nothing and the request fires again on the
+        next connect. One request per provider that needs an answer.
+      type: object
+      additionalProperties: false
+      required: [type, providerId, headline, disclosure]
+      properties:
+        type:
+          const: hooksConsentRequest
+        providerId:
+          type: string
+          description: >-
+            The hook provider whose install is being approved (HookProvider.id).
+            The client never originates this value — it echoes it back in its
+            `hooksConsentResponse`.
+        headline:
+          type: string
+          description: One-sentence summary of what is being approved.
+        disclosure:
+          type: string
+          description: |
+            Full disclosure body (what is written, what data moves, how to undo),
+            paragraphs separated by blank lines.
+
+    AreaMappingsLoaded:
+      description: |
+        Workspace-folder-to-Area mappings. Folder names map to one or more Area
+        labels; new agents from that folder prefer seats inside those Areas.
+      type: object
+      additionalProperties: false
+      required: [type, mappings]
+      properties:
+        type:
+          const: areaMappingsLoaded
+        mappings:
+          type: object
+          description: Map of folder name (string) to array of Area labels.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    ExternalAssetDirectoriesUpdated:
+      description: External asset directory list changed (after add/remove).
+      type: object
+      additionalProperties: false
+      required: [type, dirs]
+      properties:
+        type:
+          const: externalAssetDirectoriesUpdated
+        dirs:
+          type: array
+          items:
+            type: string
+
+    WorkspaceFolders:
+      description: Multi-root workspace folders (VS Code only).
+      type: object
+      additionalProperties: false
+      required: [type, folders]
+      properties:
+        type:
+          const: workspaceFolders
+        folders:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceFolder'
+
+    AgentDiagnostics:
+      description: Connection diagnostics for all agents (response to requestDiagnostics).
+      type: object
+      additionalProperties: false
+      required: [type, agents]
+      properties:
+        type:
+          const: agentDiagnostics
+        agents:
+          type: array
+          description: Per-agent diagnostic info; shape opaque to the protocol.
+          items:
+            type: object
+
+    # ── Client message variants ────────────────────────────────────
+
+    WebviewReady:
+      description: Client signals it's ready to receive state.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: webviewReady
+
+    LaunchAgent:
+      description: Launch a new Claude agent in a new terminal.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: launchAgent
+        folderPath:
+          type: string
+          description: Workspace folder path (for multi-root workspaces).
+        bypassPermissions:
+          type: boolean
+
+    FocusAgent:
+      description: Focus an agent's terminal.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: focusAgent
+        id:
+          type: integer
+
+    CloseAgent:
+      description: Close (dismiss) an agent.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: closeAgent
+        id:
+          type: integer
+
+    SaveAgentSeats:
+      description: Persist seat assignments for current agents.
+      type: object
+      additionalProperties: false
+      required: [type, seats]
+      properties:
+        type:
+          const: saveAgentSeats
+        seats:
+          type: object
+          description: Map of agent ID (string) to seat assignment.
+          additionalProperties:
+            $ref: '#/components/schemas/SeatAssignment'
+
+    SaveLayout:
+      description: Save the office layout to ~/.pixel-agents/layout.json.
+      type: object
+      additionalProperties: false
+      required: [type, layout]
+      properties:
+        type:
+          const: saveLayout
+        layout:
+          type: object
+          description: Opaque layout object; format owned by the rendering layer.
+
+    SetSoundEnabled:
+      type: object
+      additionalProperties: false
+      required: [type, enabled]
+      properties:
+        type:
+          const: setSoundEnabled
+        enabled:
+          type: boolean
+
+    SetLastSeenVersion:
+      type: object
+      additionalProperties: false
+      required: [type, version]
+      properties:
+        type:
+          const: setLastSeenVersion
+        version:
+          type: string
+
+    SetAlwaysShowLabels:
+      type: object
+      additionalProperties: false
+      required: [type, enabled]
+      properties:
+        type:
+          const: setAlwaysShowLabels
+        enabled:
+          type: boolean
+
+    SetGhostHeadlessAgents:
+      description: >-
+        Toggle translucent rendering for headless agents (adopted sessions with no
+        terminal to focus).
+      type: object
+      additionalProperties: false
+      required: [type, enabled]
+      properties:
+        type:
+          const: setGhostHeadlessAgents
+        enabled:
+          type: boolean
+
+    SetHooksEnabled:
+      type: object
+      additionalProperties: false
+      required: [type, providerId, enabled]
+      properties:
+        type:
+          const: setHooksEnabled
+        providerId:
+          type: string
+          description: >-
+            The hook provider being toggled (HookProvider.id). The client
+            echoes the id of the hooksStatus row the checkbox renders; it
+            never originates one.
+        enabled:
+          type: boolean
+
+    HooksConsentResponse:
+      description: |
+        The user's answer to `hooksConsentRequest` — an ABSOLUTE statement of
+        the state the user wants, revisable from the Intro's closing step. Only
+        an exact `install` grants consent and installs; only an exact `never`
+        records a durable decline and persists hooks-off (uninstalling first
+        when this provider's hooks are on disk from an earlier answer).
+        `notNow` writes nothing on a fresh ask, but over anything an EARLIER
+        answer left behind it reverts it — uninstalling a landed install,
+        clearing a recorded grant or decline — so the ask genuinely returns on
+        the next connect. Any unrecognized value writes NOTHING and the user is
+        asked again — a malformed choice must never be read as approval, a
+        durable decline, or an uninstall trigger. The server ignores this
+        message on unprivileged standalone connections, which were never sent
+        the request.
+      type: object
+      additionalProperties: false
+      required: [type, providerId, choice]
+      properties:
+        type:
+          const: hooksConsentResponse
+        providerId:
+          type: string
+          description: >-
+            The provider this answer is about, echoed verbatim from the
+            `hooksConsentRequest` that solicited it. An id naming no
+            registered provider is treated exactly like a junk choice:
+            write nothing.
+        choice:
+          $ref: '#/components/schemas/HooksConsentChoice'
+
+    HooksConsentChoice:
+      description: >-
+        The three consent outcomes. Receivers must treat any other value as a
+        no-op: write nothing, ask again. (An exact notNow itself is a no-op
+        only on a fresh ask — over an earlier answer it is a revision that
+        undoes what that answer left behind.)
+      type: string
+      enum: [install, notNow, never]
+
+    SetHooksInfoShown:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: setHooksInfoShown
+
+    SetWatchAllSessions:
+      type: object
+      additionalProperties: false
+      required: [type, enabled]
+      properties:
+        type:
+          const: setWatchAllSessions
+        enabled:
+          type: boolean
+
+    ExportLayout:
+      description: Trigger layout export via host-native save dialog.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: exportLayout
+
+    ImportLayout:
+      description: Trigger layout import via host-native open dialog.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: importLayout
+
+    OpenSessionsFolder:
+      description: Open ~/.claude/projects in the OS file manager.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: openSessionsFolder
+
+    AddExternalAssetDirectory:
+      description: >-
+        Add an external asset directory. In VS Code the host shows a native
+        directory picker and omits `path`; the standalone browser has no native
+        picker, so it supplies an absolute `path` typed by the user.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: addExternalAssetDirectory
+        path:
+          type: string
+          description: Absolute directory path (standalone browser only; omitted in VS Code).
+
+    RemoveExternalAssetDirectory:
+      description: Remove an external asset directory by path.
+      type: object
+      additionalProperties: false
+      required: [type, path]
+      properties:
+        type:
+          const: removeExternalAssetDirectory
+        path:
+          type: string
+
+    SaveAreaMappings:
+      description: Persist folder-to-Area mappings for seat assignment.
+      type: object
+      additionalProperties: false
+      required: [type, mappings]
+      properties:
+        type:
+          const: saveAreaMappings
+        mappings:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    SetShowAreas:
+      description: Toggle the Areas overlay (translucent rendering on top of the office).
+      type: object
+      additionalProperties: false
+      required: [type, enabled]
+      properties:
+        type:
+          const: setShowAreas
+        enabled:
+          type: boolean
+
+    RequestDiagnostics:
+      description: Request agent connection diagnostics (server responds with agentDiagnostics).
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestDiagnostics
+
+    # ── Supporting schemas ─────────────────────────────────────────
+
+    AgentSeatMeta:
+      description: |
+        Seat metadata associated with an agent (palette index, hue shift, seat ID).
+        Used in `existingAgents.agentMeta`. All fields optional because some agents
+        may not have a seat assignment yet.
+      type: object
+      additionalProperties: false
+      properties:
+        palette:
+          type: integer
+        hueShift:
+          type: integer
+        seatId:
+          type: string
+
+    SeatAssignment:
+      description: |
+        Required seat assignment payload sent in `saveAgentSeats`. `seatId` may be
+        null when the agent is unseated (left their chair). All other fields required.
+      type: object
+      additionalProperties: false
+      required: [palette, hueShift, seatId]
+      properties:
+        palette:
+          type: integer
+        hueShift:
+          type: integer
+        seatId:
+          type: [string, 'null']
+
+    WorkspaceFolder:
+      type: object
+      additionalProperties: false
+      required: [name, path]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+
+    CharacterSpriteSet:
+      description: |
+        One palette's character sprites as 3D hex-string arrays (frames × rows × pixels).
+        Three direction sets per palette: down, up, right (left is rendered as flipped right).
+      type: object
+      additionalProperties: false
+      required: [down, up, right]
+      properties:
+        down:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        up:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+        right:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+
+    FurnitureAssetMessage:
+      description: One entry in the furniture catalog (sent in `furnitureAssetsLoaded`).
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - label
+        - category
+        - file
+        - width
+        - height
+        - footprintW
+        - footprintH
+        - isDesk
+        - canPlaceOnWalls
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        label:
+          type: string
+        category:
+          type: string
+        file:
+          type: string
+        width:
+          type: integer
+        height:
+          type: integer
+        footprintW:
+          type: integer
+        footprintH:
+          type: integer
+        isDesk:
+          type: boolean
+        canPlaceOnWalls:
+          type: boolean
+        groupId:
+          type: string
+        canPlaceOnSurfaces:
+          type: boolean
+        backgroundTiles:
+          type: integer
+        orientation:
+          type: string
+        state:
+          type: string
+        mirrorSide:
+          type: boolean
+        rotationScheme:
+          type: string
+        animationGroup:
+          type: string
+        frame:
+          type: integer
+
+    # ── Agent Office control plane ─────────────────────────────────
+    # Persistent Projects, Agents, memberships and Tasks, backed by SQLite.
+    # The office UI never touches the database; it speaks only these messages.
+
+    OfficeState:
+      description: |
+        Full snapshot of the Agent Office control plane. Re-sent after every
+        mutation — the data set is small and a whole snapshot cannot drift the
+        way a stream of incremental patches can.
+      type: object
+      additionalProperties: false
+      required: [type, storage, projects, agents, memberships, tasks]
+      properties:
+        type:
+          const: officeState
+        storage:
+          $ref: '#/components/schemas/OfficeStorageStatus'
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeProject'
+        agents:
+          description: Every agent in the office. Agents are global, not owned by a project.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeAgent'
+        memberships:
+          description: Project-agent memberships for the active project only.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeMembership'
+        tasks:
+          description: Tasks of the active project only.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTask'
+        activeProjectId:
+          type: string
+
+    OfficeError:
+      description: A control-plane operation failed. Reported to the client that asked.
+      type: object
+      additionalProperties: false
+      required: [type, operation, message]
+      properties:
+        type:
+          const: officeError
+        operation:
+          type: string
+        message:
+          type: string
+
+    OfficeStorageStatus:
+      type: object
+      additionalProperties: false
+      required: [ready, schemaVersion]
+      properties:
+        ready:
+          type: boolean
+        schemaVersion:
+          type: integer
+        databasePath:
+          type: string
+        error:
+          type: string
+
+    OfficeProject:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeAgent:
+      type: object
+      additionalProperties: false
+      required: [id, name, role, description, provider, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeMembership:
+      type: object
+      additionalProperties: false
+      required: [id, projectId, agentId]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        agentId:
+          type: string
+        seatId:
+          type: string
+
+    OfficeTask:
+      type: object
+      additionalProperties: false
+      required:
+        [id, projectId, title, description, status, priority, dependencies, inputs, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        assignedAgentId:
+          type: string
+        parentTaskId:
+          description: Decomposition parent. NOT an execution dependency.
+          type: string
+        dependencies:
+          description: Task ids this task cannot start before. NOT a hierarchy.
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeTaskInput:
+      description: |
+        One TaskInput, flattened. `kind` selects which of the remaining fields
+        carries the reference; the server rebuilds the domain union from it.
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+        value:
+          description: kind=text
+          type: string
+        knowledgeId:
+          description: kind=projectKnowledge — project knowledge only, never agent knowledge.
+          type: string
+        outputId:
+          description: kind=output
+          type: string
+        path:
+          description: kind=file
+          type: string
+
+    RequestOffice:
+      description: Ask for the current office snapshot, opening the database if needed.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestOffice
+
+    CreateProject:
+      description: Create a Project. Nothing is seeded with it.
+      type: object
+      additionalProperties: false
+      required: [type, name]
+      properties:
+        type:
+          const: createProject
+        name:
+          type: string
+        description:
+          type: string
+
+    SetActiveProject:
+      description: Choose which project the office shows. Omit projectId to clear it.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: setActiveProject
+        projectId:
+          type: string
+
+    CreateAgent:
+      description: |
+        Create a global Agent. Fields mirror AgentDefinition exactly; the office
+        adds none of its own.
+      type: object
+      additionalProperties: false
+      required: [type, name, role, provider]
+      properties:
+        type:
+          const: createAgent
+        name:
+          type: string
+        role:
+          type: string
+        provider:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        model:
+          type: string
+
+    AddAgentToProject:
+      description: Add an existing global Agent to a Project as a member.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, agentId]
+      properties:
+        type:
+          const: addAgentToProject
+        projectId:
+          type: string
+        agentId:
+          type: string
+
+    RemoveAgentFromProject:
+      description: |
+        Remove a membership. The global Agent, its skills and its knowledge are
+        untouched, as are its memberships of other projects.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, agentId]
+      properties:
+        type:
+          const: removeAgentFromProject
+        projectId:
+          type: string
+        agentId:
+          type: string
+
+    CreateTask:
+      description: Create a Task inside a Project.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, title]
+      properties:
+        type:
+          const: createTask
+        projectId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        assignedAgentId:
+          type: string
+        priority:
+          type: string
+        parentTaskId:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
+
+    # ── Agent configuration ────────────────────────────────────────
+    # Everything an Agent permanently owns: its definition, its instructions,
+    # its Skills and its AgentKnowledge. Project-scoped data never appears here.
+
+    AgentDetail:
+      description: |
+        One agent's full configuration. Sent in reply to requestAgentDetail and
+        after every change to that agent, its skills or its knowledge.
+      type: object
+      additionalProperties: false
+      required: [type, agent, skills, knowledge]
+      properties:
+        type:
+          const: agentDetail
+        fileBacked:
+          description: |
+            True only when this agent's own files own its configuration AND
+            they are readable. False while a migration conflict keeps it on the
+            database, or when its files have gone missing. Editing is refused
+            either way.
+          type: boolean
+        configIssue:
+          description: |
+            What needs a person: a first-migration conflict, or a file-backed
+            agent whose files are missing. Absent when all is well.
+          type: string
+        agent:
+          $ref: '#/components/schemas/OfficeAgent'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeSkill'
+        knowledge:
+          description: Permanent, agent-owned knowledge. Never project knowledge.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeAgentKnowledge'
+
+    OfficeSkill:
+      type: object
+      additionalProperties: false
+      required: [id, agentId, slug, name, description, kind, requiredTools]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        kind:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+        content:
+          description: Inline skill body, when the skill's source carries one.
+          type: string
+
+    OfficeAgentKnowledge:
+      type: object
+      additionalProperties: false
+      required: [id, agentId, type, title, tags, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        content:
+          description: |
+            The stored text, read through the BlobStore. Omitted when the item
+            points at something this build cannot read inline (a file or url
+            reference), which leaves the reference itself untouched.
+          type: string
+        contentReadable:
+          type: boolean
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    RequestAgentDetail:
+      description: Ask for one agent's configuration. Omit agentId to clear the selection.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestAgentDetail
+        agentId:
+          type: string
+
+    UpdateAgent:
+      description: |
+        Edit an agent's own configuration. Only fields present are changed.
+        There is no project field: agents are global.
+      type: object
+      additionalProperties: false
+      required: [type, agentId]
+      properties:
+        type:
+          const: updateAgent
+        agentId:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        model:
+          type: string
+
+    CreateSkill:
+      description: Create a Skill owned by one agent. Slugs are unique within that agent.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, slug, name, kind]
+      properties:
+        type:
+          const: createSkill
+        agentId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+
+    UpdateSkill:
+      description: Edit a Skill. The owning agent cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, skillId]
+      properties:
+        type:
+          const: updateSkill
+        agentId:
+          description: The owning agent. Every agent-scoped call carries it.
+          type: string
+        skillId:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+        requiredTools:
+          type: array
+          items:
+            type: string
+
+    DeleteSkill:
+      type: object
+      additionalProperties: false
+      required: [type, agentId, skillId]
+      properties:
+        type:
+          const: deleteSkill
+        agentId:
+          type: string
+        skillId:
+          type: string
+
+    CreateAgentKnowledge:
+      description: |
+        Add permanent knowledge to an agent. This is the ONLY way agent
+        knowledge comes into being — nothing is ingested from project work.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, title, knowledgeType, content]
+      properties:
+        type:
+          const: createAgentKnowledge
+        agentId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdateAgentKnowledge:
+      description: Edit agent knowledge. The owning agent cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, agentId, knowledgeId]
+      properties:
+        type:
+          const: updateAgentKnowledge
+        agentId:
+          type: string
+        knowledgeId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    DeleteAgentKnowledge:
+      type: object
+      additionalProperties: false
+      required: [type, agentId, knowledgeId]
+      properties:
+        type:
+          const: deleteAgentKnowledge
+        agentId:
+          type: string
+        knowledgeId:
+          type: string
+
+    # ── Project workspace ──────────────────────────────────────────
+    # The temporary working context of ONE project: its definition, its
+    # members, its ProjectKnowledge and its Tasks. Nothing here touches an
+    # agent's permanent configuration (ADR 005).
+
+    ProjectDetail:
+      description: |
+        One project's whole workspace. Sent in reply to requestProjectDetail and
+        after every change to that project, its knowledge or its tasks.
+      type: object
+      additionalProperties: false
+      required:
+        [type, project, memberships, knowledge, tasks, sessions, outputs, reviewNotes]
+      properties:
+        type:
+          const: projectDetail
+        project:
+          $ref: '#/components/schemas/OfficeProjectDetail'
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeMembership'
+        knowledge:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeProjectKnowledge'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTask'
+        sessions:
+          description: Runs in this project, newest first. One per Claude Code execution.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeSession'
+        outputs:
+          description: What this project's tasks produced. Metadata only; content is fetched.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeOutput'
+        reviewNotes:
+          description: |
+            Human review feedback, oldest first. Part of the task's history and
+            never of any agent's knowledge.
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeReviewNote'
+
+    OfficeSession:
+      description: |
+        One concrete execution. NOT the agent: an AgentDefinition is permanent
+        configuration, a session is one run of it (ADR 002).
+      type: object
+      additionalProperties: false
+      required: [id, agentId, projectId, provider, status, startedAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        projectId:
+          type: string
+        taskId:
+          type: string
+        provider:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+        endedAt:
+          type: string
+        error:
+          type: string
+        providerSessionId:
+          type: string
+
+    OfficeOutput:
+      type: object
+      additionalProperties: false
+      required: [id, projectId, taskId, producedByAgentId, title, type, createdAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        taskId:
+          type: string
+        producedByAgentId:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        createdAt:
+          type: string
+
+    OfficeReviewNote:
+      type: object
+      additionalProperties: false
+      required: [id, taskId, author, body, createdAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        aboutSessionId:
+          description: The run this feedback was written about.
+          type: string
+        triggeredSessionId:
+          description: The revision run this feedback started.
+          type: string
+        author:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+
+    AcceptTask:
+      description: |
+        Accept a reviewed result: the task becomes done. No runtime is invoked
+        and no output or run history is touched.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: acceptTask
+        taskId:
+          type: string
+
+    RequestTaskChanges:
+      description: |
+        Send a reviewed task back for changes with human feedback, continuing
+        the same Claude session. The feedback is required and non-empty.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, feedback]
+      properties:
+        type:
+          const: requestTaskChanges
+        taskId:
+          type: string
+        feedback:
+          type: string
+
+    OutputContent:
+      description: The text of one output, fetched on demand.
+      type: object
+      additionalProperties: false
+      required: [type, outputId, readable]
+      properties:
+        type:
+          const: outputContent
+        outputId:
+          type: string
+        title:
+          type: string
+        readable:
+          type: boolean
+        content:
+          type: string
+
+    RunTask:
+      description: |
+        Dispatch one task to Claude Code. Refused unless the task is in the
+        active project, has a member agent assigned, its dependencies are done
+        and its status allows starting. One run at a time.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: runTask
+        taskId:
+          type: string
+
+    CancelTaskRun:
+      description: Stop the live run. The run then completes as a failure.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: cancelTaskRun
+
+    RequestOutputContent:
+      type: object
+      additionalProperties: false
+      required: [type, outputId]
+      properties:
+        type:
+          const: requestOutputContent
+        outputId:
+          type: string
+
+    OfficeProjectDetail:
+      description: A project with the settings the office can edit.
+      type: object
+      additionalProperties: false
+      required: [id, name, description, status, workspacePaths, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        workspacePaths:
+          type: array
+          items:
+            type: string
+        defaultProvider:
+          type: string
+        defaultModel:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OfficeProjectKnowledge:
+      description: |
+        Knowledge owned by one project. Never reachable from an agent's library:
+        the two are separate entities with separate repositories.
+      type: object
+      additionalProperties: false
+      required: [id, projectId, type, title, tags, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        content:
+          description: Resolved blob content. Absent when the reference cannot be read.
+          type: string
+        contentReadable:
+          type: boolean
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    RequestProjectDetail:
+      description: Open a project workspace. Omit projectId to close it.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestProjectDetail
+        projectId:
+          type: string
+
+    UpdateProject:
+      description: Edit a project's own definition and settings.
+      type: object
+      additionalProperties: false
+      required: [type, projectId]
+      properties:
+        type:
+          const: updateProject
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        workspacePaths:
+          type: array
+          items:
+            type: string
+        defaultProvider:
+          type: string
+        defaultModel:
+          type: string
+
+    CreateProjectKnowledge:
+      description: |
+        Add knowledge to a project. The only way project knowledge is created —
+        nothing is ingested automatically, and none of it ever reaches an agent's
+        own knowledge.
+      type: object
+      additionalProperties: false
+      required: [type, projectId, title, knowledgeType, content]
+      properties:
+        type:
+          const: createProjectKnowledge
+        projectId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdateProjectKnowledge:
+      description: Edit project knowledge. The owning project cannot be changed.
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: updateProjectKnowledge
+        knowledgeId:
+          type: string
+        title:
+          type: string
+        knowledgeType:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    DeleteProjectKnowledge:
+      type: object
+      additionalProperties: false
+      required: [type, knowledgeId]
+      properties:
+        type:
+          const: deleteProjectKnowledge
+        knowledgeId:
+          type: string
+
+    UpdateTask:
+      description: |
+        Edit a task's own fields. Status and assignment have their own messages
+        because the domain guards them with transition rules.
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: updateTask
+        taskId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        parentTaskId:
+          type: string
+        clearParentTask:
+          description: Detach this task from its decomposition parent.
+          type: boolean
+        dependencies:
+          type: array
+          items:
+            type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfficeTaskInput'
+
+    AssignTask:
+      description: Assign a task to an agent that is a member of its project.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, agentId]
+      properties:
+        type:
+          const: assignTask
+        taskId:
+          type: string
+        agentId:
+          type: string
+
+    UnassignTask:
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: unassignTask
+        taskId:
+          type: string
+
+    SetTaskStatus:
+      description: Move a task through the status machine the domain defines.
+      type: object
+      additionalProperties: false
+      required: [type, taskId, status]
+      properties:
+        type:
+          const: setTaskStatus
+        taskId:
+          type: string
+        status:
+          type: string
+
+    DeleteTask:
+      type: object
+      additionalProperties: false
+      required: [type, taskId]
+      properties:
+        type:
+          const: deleteTask
+        taskId:
+          type: string

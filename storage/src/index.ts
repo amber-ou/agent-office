@@ -1,0 +1,116 @@
+/**
+ * Storage adapters for the Agent Office domain ports.
+ *
+ * Two adapters, both satisfying the same contract suite in
+ * `storage/__tests__/repositoryContract.ts` without it being modified:
+ *
+ *   in-memory  tests and throwaway runs; nothing survives the process.
+ *   sqlite     the canonical local store (ADR 006). Metadata in SQLite,
+ *              blob content on the filesystem beside it.
+ *
+ * The data root is `~/.agent-office/` — deliberately separate from upstream's
+ * `~/.pixel-agents/`, so neither writes into the other's files. That path is a
+ * decision belonging to this layer; nothing in `domain/` knows it exists.
+ */
+
+export type {
+  AgentCcFields,
+  AgentFileStore,
+  KnowledgeFileInput,
+  OfficeAgentMeta,
+  SkillFileInput,
+  StoredKnowledge,
+  StoredSkill,
+} from './agentFiles.js';
+export type { CcBridgeBackfillReport } from './files/backfillCcBridge.js';
+export { backfillCcBridge } from './files/backfillCcBridge.js';
+export type { FileValidation } from './files/ccBridge.js';
+export {
+  ccFieldsFromAgent,
+  ccFieldsFromToolGrants,
+  ccIdentifierFor,
+  hasConflictMarkers,
+  hasKnowledgePointer,
+  knowledgePointerBlock,
+  officeMetaFromAgent,
+  qualifiedSkillName,
+  toolGrantsFromCcFields,
+  validateBridgeFile,
+} from './files/ccBridge.js';
+export type {
+  AgentDiscoveryPaths,
+  CcBridgeDamage,
+  CcBridgeLinkFailure,
+  CcBridgeSyncReport,
+} from './files/ccBridgeSync.js';
+export { syncCcBridge } from './files/ccBridgeSync.js';
+export type { LinkOutcome } from './files/discoveryLinks.js';
+export {
+  ensureDirectoryLink,
+  isOurLink,
+  removeDirectoryLinkIfOurs,
+} from './files/discoveryLinks.js';
+export { AGENTS_DIR_NAME, FileAgentStore } from './files/fileAgentStore.js';
+export type { ImportAgentsReport } from './files/importAgentsFromDisk.js';
+export { importAgentsFromDisk } from './files/importAgentsFromDisk.js';
+export type {
+  LinkNativeAgentFailure,
+  LinkNativeAgentResult,
+  LinkNativeAgentSuccess,
+} from './files/linkNativeAgent.js';
+export { linkNativeAgentFile } from './files/linkNativeAgent.js';
+export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
+export { migrateAgentFiles } from './files/migrateAgentFiles.js';
+export type { NativeAgentDiscoverability } from './files/nativeAgentDiscovery.js';
+export { verifyNativeAgentDiscoverable } from './files/nativeAgentDiscovery.js';
+export type {
+  NativeAgentFields,
+  NativeAgentParseError,
+  NativeAgentParseResult,
+  ParsedNativeAgent,
+} from './files/nativeAgentFile.js';
+export { parseNativeAgentFile } from './files/nativeAgentFile.js';
+export { clone, InMemoryRepository } from './memory/inMemoryRepository.js';
+export type { InMemoryRepositories, InMemoryStorage } from './memory/repositories.js';
+export {
+  createInMemoryRepositories,
+  createInMemoryStorage,
+  InMemoryAgentKnowledgeRepository,
+  InMemoryAgentRepository,
+  InMemoryAgentSessionRepository,
+  InMemoryBlobStore,
+  InMemoryOutputRepository,
+  InMemoryProjectAgentRepository,
+  InMemoryProjectKnowledgeRepository,
+  InMemoryProjectRepository,
+  InMemorySkillRepository,
+  InMemoryTaskRepository,
+  InMemoryUnitOfWork,
+} from './memory/repositories.js';
+export type { SnapshotHandle, Snapshottable } from './memory/transaction.js';
+export type { ReviewNote, ReviewNoteStore } from './reviewNotes.js';
+export type { AgentMigrationStore } from './sqlite/agentMigrations.js';
+export type { OpenSqliteStorageOptions, SqliteStorage } from './sqlite/index.js';
+export {
+  BLOBS_DIR_NAME,
+  DATABASE_FILE_NAME,
+  DEFAULT_DATA_DIR_NAME,
+  defaultDataRoot,
+  FileBlobStore,
+  LATEST_SCHEMA_VERSION,
+  migrate,
+  MIGRATIONS,
+  openSqliteStorage,
+  SqliteAgentKnowledgeRepository,
+  SqliteAgentRepository,
+  SqliteAgentSessionRepository,
+  SqliteDatabase,
+  SqliteOutputRepository,
+  SqliteProjectAgentRepository,
+  SqliteProjectKnowledgeRepository,
+  SqliteProjectRepository,
+  SqliteSkillRepository,
+  SqliteTaskRepository,
+  SqliteUnitOfWork,
+} from './sqlite/index.js';
+export type { Migration } from './sqlite/migrations.js';
