@@ -16,10 +16,12 @@ import * as path from 'node:path';
 
 import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
 import type { AgentFileStore } from '../agentFiles.js';
+import type { AgentCallLogStore } from '../callLog.js';
 import { AGENTS_DIR_NAME, FileAgentStore } from '../files/fileAgentStore.js';
 import type { ReviewNoteStore } from '../reviewNotes.js';
 import type { AgentMigrationStore } from './agentMigrations.js';
 import { SqliteAgentMigrationStore } from './agentMigrations.js';
+import { SqliteAgentCallLogStore } from './callLog.js';
 import { SqliteDatabase } from './database.js';
 import { FileBlobStore } from './fileBlobStore.js';
 import type { Migration } from './migrations.js';
@@ -69,6 +71,11 @@ export interface SqliteStorage {
    * port stays as it is.
    */
   reviews: ReviewNoteStore;
+  /**
+   * Observed CC subagent calls — a sibling record, not part of `Repositories`
+   * (see `storage/src/callLog.ts` for why).
+   */
+  callLog: AgentCallLogStore;
   /**
    * Agent-owned files: instructions, skills and foundational knowledge. The
    * authoritative source for those, once an agent has been migrated.
@@ -140,6 +147,7 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
     uow: new SqliteUnitOfWork(db, repos, blobs),
     // Shares the connection, so a note joins whatever transaction is open.
     reviews: new SqliteReviewNoteStore(db),
+    callLog: new SqliteAgentCallLogStore(db),
     agentFiles,
     agentMigrations: new SqliteAgentMigrationStore(db),
     db,
@@ -154,6 +162,7 @@ export function openSqliteStorage(options: OpenSqliteStorageOptions = {}): Sqlit
   };
 }
 
+export { SqliteAgentCallLogStore } from './callLog.js';
 export { SqliteDatabase } from './database.js';
 export { FileBlobStore } from './fileBlobStore.js';
 export type { Migration } from './migrations.js';

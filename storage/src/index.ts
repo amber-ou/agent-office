@@ -22,6 +22,14 @@ export type {
   StoredKnowledge,
   StoredSkill,
 } from './agentFiles.js';
+export type {
+  AgentCall,
+  AgentCallLogStore,
+  AgentCallStatus,
+  AgentCallUsage,
+  EndAgentCallInput,
+  StartAgentCallInput,
+} from './callLog.js';
 export type { CcBridgeBackfillReport } from './files/backfillCcBridge.js';
 export { backfillCcBridge } from './files/backfillCcBridge.js';
 export type { FileValidation } from './files/ccBridge.js';
@@ -61,8 +69,14 @@ export type {
 export { linkNativeAgentFile } from './files/linkNativeAgent.js';
 export type { AgentMigrationReport, MigrationConflict } from './files/migrateAgentFiles.js';
 export { migrateAgentFiles } from './files/migrateAgentFiles.js';
-export type { NativeAgentDiscoverability } from './files/nativeAgentDiscovery.js';
-export { verifyNativeAgentDiscoverable } from './files/nativeAgentDiscovery.js';
+export type {
+  NativeAgentDiscoverability,
+  NativeAgentRosterEntry,
+} from './files/nativeAgentDiscovery.js';
+export {
+  discoverNativeAgents,
+  verifyNativeAgentDiscoverable,
+} from './files/nativeAgentDiscovery.js';
 export type {
   NativeAgentFields,
   NativeAgentParseError,
@@ -101,6 +115,7 @@ export {
   migrate,
   MIGRATIONS,
   openSqliteStorage,
+  SqliteAgentCallLogStore,
   SqliteAgentKnowledgeRepository,
   SqliteAgentRepository,
   SqliteAgentSessionRepository,

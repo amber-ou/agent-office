@@ -14,6 +14,7 @@ import * as path from 'path';
 
 import type { HookProvider } from '../../core/src/provider.js';
 import type { AgentStateStore } from './agentStateStore.js';
+import { installCallLogBridge } from './callLogBridge.js';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from './constants.js';
 import { DismissalTracker } from './dismissalTracker.js';
 import {
@@ -36,6 +37,7 @@ import {
 } from './fileWatcher.js';
 import type { HookEvent } from './hookEventHandler.js';
 import { HookEventHandler } from './hookEventHandler.js';
+import { broadcastNativeAgentRoster, watchNativeAgentRoster } from './nativeAgentRoster.js';
 import { assignPaletteIfNeeded } from './paletteAssigner.js';
 import { PathSet, pathsMatch } from './pathKey.js';
 import { SessionRouter } from './sessionRouter.js';
@@ -93,6 +95,14 @@ export class AgentRuntime {
     setDismissalTracker(this.dismissalTracker);
     setHookProvider(provider);
     setFileWatcherHookProvider(provider);
+    // CC activity dashboard: the native-agent roster and the observed call
+    // log are independent of hooks/teams and of any Office project, so they
+    // are wired once here rather than threaded through the hook/team setup
+    // below. Roster scan is best-effort and never throws; call log capture
+    // is a no-op when the Office database failed to open.
+    broadcastNativeAgentRoster(store);
+    watchNativeAgentRoster(store);
+    installCallLogBridge(store);
     this.subagentWatch = new SubagentWatch(store);
     setSubagentWatch(this.subagentWatch);
     if (provider.team) {

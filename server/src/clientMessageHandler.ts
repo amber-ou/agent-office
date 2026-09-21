@@ -15,7 +15,9 @@ import {
 import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT } from './constants.js';
 import type { OfficeSession } from './control/officeMessageHandler.js';
 import { isOfficeClientMessage } from './control/officeMessageHandler.js';
+import { getOfficeStorage } from './control/officeStorage.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
+import { scanNativeAgentRoster } from './nativeAgentRoster.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
 import { hooksConsentRequest } from './providers/hook/consentGate.js';
@@ -299,6 +301,10 @@ export function handleClientMessage(
       break;
     }
 
+    case 'requestCallLog':
+      sendCallLogSnapshot(send);
+      break;
+
     default:
       // focusAgent, exportLayout, importLayout
       // require IDE-specific handling (not yet implemented for standalone)
@@ -384,6 +390,29 @@ function standaloneConsentEffects(
   };
 }
 
+/**
+ * Send the current native-agent roster and the recent call log to one
+ * client. The roster is a cheap synchronous filesystem scan; the call log is
+ * read from storage when available and sent as an empty list (not an error)
+ * when it is not — mirroring the "office still renders, it just cannot
+ * persist" behavior the rest of storage.ts follows.
+ */
+function sendCallLogSnapshot(send: WsSend): void {
+  send({ type: 'nativeAgentRoster', agents: scanNativeAgentRoster() });
+  const storage = getOfficeStorage();
+  if (!storage) {
+    send({ type: 'agentCallLogSnapshot', calls: [] });
+    return;
+  }
+  void storage.callLog
+    .listRecent(200)
+    .then((calls) => send({ type: 'agentCallLogSnapshot', calls }))
+    .catch((err: unknown) => {
+      console.error('[Agent Office] Call log: failed to load snapshot:', err);
+      send({ type: 'agentCallLogSnapshot', calls: [] });
+    });
+}
+
 function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // Open the Agent Office database and push the first snapshot alongside the
   // rest of the ready handshake, so the office has its persisted state from the
@@ -403,6 +432,12 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     readingTools: [...claudeProvider.readingTools],
     subagentToolNames: [...claudeProvider.subagentToolNames],
   });
+
+  // 1a. CC activity dashboard: native-agent roster + recent call log. Sent to
+  // every client unconditionally (read-only observed activity — the same
+  // trust level as the rest of this live broadcast, NOT the privileged
+  // Office CRUD control plane gated above).
+  sendCallLogSnapshot(send);
 
   // 2. Assets (from server cache, loaded at startup via pngjs)
   if (cache) {

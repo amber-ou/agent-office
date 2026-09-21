@@ -22,6 +22,7 @@ import { OfficeService } from '../src/control/officeService.js';
 import {
   closeOfficeStorage,
   getOfficeStorage,
+  setClaudeDiscoveryPaths,
   setOfficeDataRoot,
 } from '../src/control/officeStorage.js';
 
@@ -46,11 +47,19 @@ function context(privileged: boolean) {
 beforeEach(() => {
   dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-office-authz-'));
   setOfficeDataRoot(dataRoot);
+  // webviewReady now also scans the CC native-agent roster; point it at an
+  // empty temp dir rather than the real ~/.claude/agents (verification must
+  // stay in a temp environment, never touch a real user's files).
+  setClaudeDiscoveryPaths({
+    claudeAgentsRoot: path.join(dataRoot, 'claude-agents'),
+    claudeSkillsRoot: path.join(dataRoot, 'claude-skills'),
+  });
 });
 
 afterEach(() => {
   closeOfficeStorage();
   setOfficeDataRoot(undefined);
+  setClaudeDiscoveryPaths(undefined);
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 

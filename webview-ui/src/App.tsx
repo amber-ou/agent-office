@@ -13,7 +13,7 @@ import { Tooltip } from './components/Tooltip.js';
 import { Modal } from './components/ui/Modal.js';
 import { VersionIndicator } from './components/VersionIndicator.js';
 import { ZoomControls } from './components/ZoomControls.js';
-import { OfficePanel } from './control/OfficePanel.js';
+import { TaskLogPanel } from './control/TaskLogPanel.js';
 import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
@@ -106,7 +106,7 @@ function App() {
 
   const [isChangelogOpen, setIsChangelogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isOfficeOpen, setIsOfficeOpen] = useState(false);
+  const [isTaskLogOpen, setIsTaskLogOpen] = useState(false);
   const [isHooksInfoOpen, setIsHooksInfoOpen] = useState(false);
   const [hooksTooltipDismissed, setHooksTooltipDismissed] = useState(false);
   const [isDebugMode, setIsDebugMode] = useState(false);
@@ -240,8 +240,10 @@ function App() {
     const os = getOfficeState();
     const officeAgentId = os.characters.get(agentId)?.officeAgentId;
     if (officeAgentId) {
-      setIsOfficeOpen(true);
-      transport.send({ type: 'requestAgentDetail', agentId: officeAgentId });
+      // A roster-sourced resident character (see officeCharacters.ts):
+      // there is no Office Agent configuration to open any more — CC's own
+      // agent file is the sole source. Open the read-only call log instead.
+      setIsTaskLogOpen(true);
       return;
     }
     const meta = os.subagentMeta.get(agentId);
@@ -526,12 +528,12 @@ function App() {
         onToggleEditMode={editor.handleToggleEditMode}
         isSettingsOpen={isSettingsOpen}
         onToggleSettings={() => setIsSettingsOpen((v) => !v)}
-        isOfficeOpen={isOfficeOpen}
-        onToggleOffice={() => setIsOfficeOpen((v) => !v)}
+        isTaskLogOpen={isTaskLogOpen}
+        onToggleTaskLog={() => setIsTaskLogOpen((v) => !v)}
         workspaceFolders={workspaceFolders}
       />
 
-      <OfficePanel isOpen={isOfficeOpen} onClose={() => setIsOfficeOpen(false)} />
+      <TaskLogPanel isOpen={isTaskLogOpen} onClose={() => setIsTaskLogOpen(false)} />
 
       <VersionIndicator
         currentVersion={extensionVersion}

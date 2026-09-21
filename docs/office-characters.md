@@ -1,5 +1,11 @@
 # Office Agent 人物
 
+> **已由 [`task-log.md`](./task-log.md) 取代人物來源與呼叫觀測的部分**：人物現在來自
+> CC 原生 Agent 名單（`~/.claude/agents`），不再依賴本文件描述的 Office
+> Project／AgentDefinition／Task／AgentSession。本文件保留供歷史對照；程式碼中的
+> `webview-ui/src/office/engine/officeCharacters.ts` 已改為新機制，下面的座位／走路／
+> 動畫素材說明仍然適用。
+
 沿用 Pixel Agents 的人物素材、座位、走路與工作動畫。
 
 - 選取專案後，該專案的每個成員會顯示一個人物，不需要先執行 Task。

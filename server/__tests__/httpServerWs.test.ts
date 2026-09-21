@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { WS_CLOSE_FORBIDDEN_ORIGIN, WS_CLOSE_UNAUTHORIZED } from '../src/constants.js';
+import { closeOfficeStorage } from '../src/control/officeStorage.js';
 
 // Isolated temp HOME: the server writes ~/.pixel-agents/{server.json,servers/}
 // and the consent assertions below read ~/.pixel-agents/config.json.
@@ -113,6 +114,12 @@ describe('/ws connection gate', () => {
     for (const socket of sockets) socket.terminate();
     sockets.length = 0;
     server?.stop();
+    // The Office database is a lazily-opened, process-wide singleton keyed
+    // off os.homedir() at open time; without closing it here, the NEXT
+    // test's webviewReady (which now always opens it, for the call-log
+    // snapshot) reuses THIS test's connection after its tmpBase is deleted
+    // below, which SQLite reports as a disk I/O error.
+    closeOfficeStorage();
     try {
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {
@@ -266,6 +273,9 @@ describe('/ws privileged-message gate', () => {
     for (const socket of sockets) socket.terminate();
     sockets.length = 0;
     server?.stop();
+    // See the sibling describe block's afterEach: without this, the next
+    // test's webviewReady reuses this test's now-deleted tmpBase connection.
+    closeOfficeStorage();
     try {
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {

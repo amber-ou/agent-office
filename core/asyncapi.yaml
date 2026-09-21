@@ -124,6 +124,10 @@ components:
         - $ref: '#/components/schemas/AgentDetail'
         - $ref: '#/components/schemas/ProjectDetail'
         - $ref: '#/components/schemas/OutputContent'
+        # CC activity dashboard: native-agent roster + observed call log
+        - $ref: '#/components/schemas/NativeAgentRoster'
+        - $ref: '#/components/schemas/AgentCallLogSnapshot'
+        - $ref: '#/components/schemas/AgentCallUpdated'
       discriminator: type
 
     ClientMessage:
@@ -182,6 +186,8 @@ components:
         - $ref: '#/components/schemas/RequestOutputContent'
         - $ref: '#/components/schemas/AcceptTask'
         - $ref: '#/components/schemas/RequestTaskChanges'
+        # CC activity dashboard
+        - $ref: '#/components/schemas/RequestCallLog'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -2214,3 +2220,167 @@ components:
           const: deleteTask
         taskId:
           type: string
+
+    # ── CC activity dashboard ────────────────────────────────────────
+    # Office observes Claude Code's own agent roster and activity; it never
+    # creates a Project/Task/AgentDefinition to hold this. See
+    # storage/src/callLog.ts and storage/src/files/nativeAgentDiscovery.ts.
+
+    NativeAgentRosterEntry:
+      description: One CC-native subagent file found under ~/.claude/agents.
+      type: object
+      additionalProperties: false
+      required: [name, description, filePath, ambiguous]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        filePath:
+          type: string
+        ambiguous:
+          description: |
+            True when another file under the same root declares the same
+            name, so a subagent_type match to this name cannot be resolved
+            to this one file with confidence.
+          type: boolean
+
+    NativeAgentRoster:
+      description: |
+        Snapshot of every CC-native subagent file under ~/.claude/agents,
+        read fresh. Drives the office's persistent, idle-capable characters
+        — one per roster entry, independent of any Office
+        Project/AgentDefinition. Sent on webviewReady and again whenever the
+        roster changes on disk.
+      type: object
+      additionalProperties: false
+      required: [type, agents]
+      properties:
+        type:
+          const: nativeAgentRoster
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/NativeAgentRosterEntry'
+
+    AgentCallUsage:
+      description: |
+        Token usage attributed to one call. Present only when it could be
+        attributed to this call alone with no ambiguity (see
+        AgentCallLogEntry.recognized and the call-log capture in
+        transcriptParser.ts).
+      type: object
+      additionalProperties: false
+      required: [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens]
+      properties:
+        inputTokens:
+          type: integer
+        outputTokens:
+          type: integer
+        cacheCreationTokens:
+          type: integer
+        cacheReadTokens:
+          type: integer
+
+    AgentCallStatus:
+      description: |
+        running: the call is in progress. waiting_response: reserved for a
+        future call type that can independently pause for input — no call
+        path in this version reaches it. ended / failed: a confirmed
+        terminal outcome. unknown: was open when the server that was
+        tracking it stopped, and no confirmed end ever arrived — never
+        promoted to ended/failed on a guess.
+      type: string
+      enum: [running, waiting_response, ended, failed, unknown]
+
+    AgentCallLogEntry:
+      description: One observed call to a CC subagent (the Task tool's subagent_type).
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          agentName,
+          recognized,
+          parentSessionId,
+          toolUseId,
+          status,
+          startUnknown,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id:
+          type: string
+        agentName:
+          description: The Task tool's subagent_type input value.
+          type: string
+        agentFilePath:
+          description: Set only once agentName matched exactly one roster file.
+          type: string
+        recognized:
+          type: boolean
+        parentSessionId:
+          description: The Claude session id of the conversation that made the call.
+          type: string
+        toolUseId:
+          description: Stable JSONL tool_use id of the Task tool call.
+          type: string
+        taskText:
+          description: The Task tool's prompt input.
+          type: string
+        taskDescription:
+          description: The Task tool's short description input.
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentCallStatus'
+        startedAt:
+          type: string
+        startUnknown:
+          type: boolean
+        endedAt:
+          type: string
+        usage:
+          $ref: '#/components/schemas/AgentCallUsage'
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    AgentCallLogSnapshot:
+      description: |
+        The most recent observed calls, newest first. Sent on webviewReady
+        and in reply to requestCallLog.
+      type: object
+      additionalProperties: false
+      required: [type, calls]
+      properties:
+        type:
+          const: agentCallLogSnapshot
+        calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCallLogEntry'
+
+    AgentCallUpdated:
+      description: |
+        One call was created or changed (status, usage, or end). Incremental
+        push so a client does not need to re-request the whole snapshot on
+        every event.
+      type: object
+      additionalProperties: false
+      required: [type, call]
+      properties:
+        type:
+          const: agentCallUpdated
+        call:
+          $ref: '#/components/schemas/AgentCallLogEntry'
+
+    RequestCallLog:
+      description: Ask for the current native-agent roster and recent call log.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestCallLog

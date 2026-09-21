@@ -43,7 +43,10 @@ export type ServerMessage =
   | OfficeError
   | AgentDetail
   | ProjectDetail
-  | OutputContent;
+  | OutputContent
+  | NativeAgentRoster
+  | AgentCallLogSnapshot
+  | AgentCallUpdated;
 
 export type ClientMessage =
   | WebviewReady
@@ -97,7 +100,8 @@ export type ClientMessage =
   | CancelTaskRun
   | RequestOutputContent
   | AcceptTask
-  | RequestTaskChanges;
+  | RequestTaskChanges
+  | RequestCallLog;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -536,6 +540,55 @@ export interface OutputContent {
   content?: string;
 }
 
+export interface NativeAgentRoster {
+  type: 'nativeAgentRoster';
+  agents: NativeAgentRosterEntry[];
+}
+
+export interface NativeAgentRosterEntry {
+  name: string;
+  description: string;
+  filePath: string;
+  ambiguous: boolean;
+}
+
+export interface AgentCallLogSnapshot {
+  type: 'agentCallLogSnapshot';
+  calls: AgentCallLogEntry[];
+}
+
+export interface AgentCallLogEntry {
+  id: string;
+  agentName: string;
+  agentFilePath?: string;
+  recognized: boolean;
+  parentSessionId: string;
+  toolUseId: string;
+  taskText?: string;
+  taskDescription?: string;
+  status: AgentCallStatus;
+  startedAt?: string;
+  startUnknown: boolean;
+  endedAt?: string;
+  usage?: AgentCallUsage;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentCallStatus = 'running' | 'waiting_response' | 'ended' | 'failed' | 'unknown';
+
+export interface AgentCallUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+}
+
+export interface AgentCallUpdated {
+  type: 'agentCallUpdated';
+  call: AgentCallLogEntry;
+}
+
 export interface WebviewReady {
   type: 'webviewReady';
 }
@@ -865,4 +918,8 @@ export interface RequestTaskChanges {
   type: 'requestTaskChanges';
   taskId: string;
   feedback: string;
+}
+
+export interface RequestCallLog {
+  type: 'requestCallLog';
 }

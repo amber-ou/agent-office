@@ -11,6 +11,7 @@ import {
   grantHooksConsent,
   setHooksEnabled,
 } from '../src/configPersistence.js';
+import { closeOfficeStorage, setOfficeDataRoot } from '../src/control/officeStorage.js';
 import { FileStateAdapter } from '../src/fileStateAdapter.js';
 import {
   CONSENT_DISCLOSURE,
@@ -33,6 +34,7 @@ function settle(): Promise<void> {
 describe('clientMessageHandler: hooks consent flow', () => {
   let tempHome: string;
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
   let store: AgentStateStore;
   let sent: Array<Record<string, unknown>>;
   let ctx: ClientMessageContext;
@@ -76,7 +78,17 @@ describe('clientMessageHandler: hooks consent flow', () => {
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-consent-flow-'));
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    // os.homedir() reads USERPROFILE on Windows, HOME elsewhere — both must
+    // be overridden or a Windows run falls through to the real home
+    // directory's .pixel-agents/.agent-office/.claude, not this temp dir.
     process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    // webviewReady now also opens the Office database (for the call-log
+    // snapshot); closing it first guarantees THIS test opens a fresh one
+    // under tempHome rather than reusing another test's now-deleted one.
+    closeOfficeStorage();
+    setOfficeDataRoot(undefined);
 
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
@@ -85,10 +97,16 @@ describe('clientMessageHandler: hooks consent flow', () => {
   });
 
   afterEach(() => {
+    closeOfficeStorage();
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
     }
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });

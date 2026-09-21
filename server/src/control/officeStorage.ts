@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import type { Repositories, UnitOfWork } from '../../../domain/src/index.js';
 import { systemClock } from '../../../domain/src/index.js';
 import type {
+  AgentCallLogStore,
   AgentDiscoveryPaths,
   AgentFileStore,
   AgentMigrationReport,
@@ -52,6 +53,8 @@ export interface OfficeStorage {
   uow: UnitOfWork;
   /** Human review notes — an application record, not a domain repository. */
   reviews: ReviewNoteStore;
+  /** Observed CC subagent calls — see storage/src/callLog.ts. */
+  callLog: AgentCallLogStore;
   /** Agent-owned files: instructions, skills, foundational knowledge. */
   agentFiles: AgentFileStore;
   /** Which agents have moved to files. Durable, and not inside those files. */
@@ -100,6 +103,17 @@ export function setClaudeDiscoveryPaths(paths: AgentDiscoveryPaths | undefined):
   claudeDiscoveryPathsOverride = paths;
 }
 
+/**
+ * Where Claude Code's own agent roster lives, independent of whether the
+ * Office database is open. The native-agent roster (unlike the call log) is
+ * read straight from these files and must keep working even when storage
+ * failed to open — reading CC's own agent list and showing idle characters
+ * is not itself a database operation.
+ */
+export function getClaudeDiscoveryPaths(): AgentDiscoveryPaths {
+  return claudeDiscoveryPathsOverride ?? defaultClaudeDiscoveryPaths();
+}
+
 export function getOfficeStorage(): OfficeStorage | null {
   if (opened) {
     return toOfficeStorage(opened);
@@ -121,6 +135,17 @@ export function getOfficeStorage(): OfficeStorage | null {
     // chain can never repoint it mid-flight onto a different database.
     migrationRun = runAgentFileMigration(storage);
     ccBridgeRun = migrationRun.then(() => runCcBridge(storage));
+    // Safety net for the call log: any call still open from a previous
+    // process is not still running — this process holds no live connection
+    // to it — but the moment it actually ended is unknown, so it moves to
+    // 'unknown' rather than being marked ended/failed with a fabricated time.
+    void storage.callLog.markOpenCallsUnknown().then((count) => {
+      if (count > 0) {
+        console.log(
+          `[Agent Office] ${count} call(s) still open from a previous run marked status "unknown".`,
+        );
+      }
+    });
     return toOfficeStorage(storage);
   } catch (error) {
     openError = error instanceof Error ? error.message : String(error);
@@ -134,6 +159,7 @@ function toOfficeStorage(storage: SqliteStorage): OfficeStorage {
     repos: storage.repos,
     uow: storage.uow,
     reviews: storage.reviews,
+    callLog: storage.callLog,
     agentFiles: storage.agentFiles,
     agentMigrations: storage.agentMigrations,
     ccDiscoveryPaths: claudeDiscoveryPathsOverride ?? defaultClaudeDiscoveryPaths(),

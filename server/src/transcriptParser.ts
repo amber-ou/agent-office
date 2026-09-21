@@ -84,6 +84,42 @@ export function setTeamSwitchCallback(
   teamSwitchCallback = cb;
 }
 
+/**
+ * A `Task` tool call naming a `subagent_type` — the one reliably observable
+ * "CC delegates to a named subagent" event (see docs/office-characters.md
+ * and the call-log spec: a separately-launched `claude --agent X` session
+ * carries no field tying it back to an agent name, so only this
+ * within-conversation delegation is captured for the call log).
+ *
+ * `parentSessionId` is the real Claude session id of the conversation that
+ * made the call — the call log's identity, never the process-local runtime
+ * `agentId`. `toolUseId` is the stable JSONL tool_use id, paired with the
+ * matching tool_result at `taskCallEndedCallback`.
+ */
+export interface TaskCallStartInfo {
+  agentId: number;
+  parentSessionId: string;
+  toolUseId: string;
+  subagentType: string;
+  prompt?: string;
+  description?: string;
+}
+let taskCallStartedCallback: ((info: TaskCallStartInfo) => void) | null = null;
+export function setTaskCallStartedCallback(cb: ((info: TaskCallStartInfo) => void) | null): void {
+  taskCallStartedCallback = cb;
+}
+
+export interface TaskCallEndInfo {
+  agentId: number;
+  parentSessionId: string;
+  toolUseId: string;
+  isError: boolean;
+}
+let taskCallEndedCallback: ((info: TaskCallEndInfo) => void) | null = null;
+export function setTaskCallEndedCallback(cb: ((info: TaskCallEndInfo) => void) | null): void {
+  taskCallEndedCallback = cb;
+}
+
 /** Format a tool status line. Delegates to the active HookProvider's formatToolStatus.
  *  Invariant: a provider is registered before any transcript lines are parsed. */
 export function formatToolStatus(toolName: string, input: Record<string, unknown>): string {
@@ -166,6 +202,24 @@ export function processTranscriptLine(
             agent.activeToolNames.set(block.id, toolName);
             if (!exemptTools().has(toolName)) {
               hasNonExemptTool = true;
+            }
+            // Call-log capture: only the Task tool's subagent_type names an
+            // agent identity directly in the tool input. `agent.sessionId` is
+            // the real Claude session id (the call log's identity), never the
+            // process-local runtime agentId.
+            if (toolName === 'Task' && typeof block.input?.['subagent_type'] === 'string') {
+              taskCallStartedCallback?.({
+                agentId,
+                parentSessionId: agent.sessionId,
+                toolUseId: block.id,
+                subagentType: block.input['subagent_type'],
+                ...(typeof block.input['prompt'] === 'string'
+                  ? { prompt: block.input['prompt'] }
+                  : {}),
+                ...(typeof block.input['description'] === 'string'
+                  ? { description: block.input['description'] }
+                  : {}),
+              });
             }
             // Detect tmux vs inline team mode from the team provider's spawn predicate.
             if (
@@ -358,6 +412,14 @@ export function processTranscriptLine(
               console.log(
                 `[Pixel Agents] JSONL: Agent ${agentId} - tool done: ${block.tool_use_id}`,
               );
+              if (completedToolName === 'Task') {
+                taskCallEndedCallback?.({
+                  agentId,
+                  parentSessionId: agent.sessionId,
+                  toolUseId: completedToolId,
+                  isError: (block as { is_error?: unknown }).is_error === true,
+                });
+              }
               // If the completed tool spawned a subagent, clear its subagent tools
               if (isSubagentTool(completedToolName)) {
                 agent.activeSubagentToolIds.delete(completedToolId);

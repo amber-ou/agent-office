@@ -1,21 +1,16 @@
 import type {
-  OfficeSession,
-  OfficeState as Snapshot,
-  OfficeTask,
+  AgentCallLogEntry,
+  NativeAgentRosterEntry,
   ServerMessage,
 } from '../../../../core/src/messages.js';
 import { getLoadedCharacterCount } from '../sprites/spriteData.js';
 import type { OfficeState } from './officeState.js';
 
-export type OfficeCharacterStatus = 'idle' | 'working' | 'review' | 'blocked' | 'error' | 'waiting';
+export type OfficeCharacterStatus = 'idle' | 'working';
 
 export const OFFICE_CHARACTER_LABELS: Record<OfficeCharacterStatus, string> = {
   idle: '待命',
   working: '工作中',
-  review: '等待審核',
-  blocked: '受阻',
-  error: '執行失敗',
-  waiting: '等待回應',
 };
 
 function hashId(value: string): number {
@@ -24,84 +19,62 @@ function hashId(value: string): number {
   return hash >>> 0;
 }
 
-/** Task state takes precedence over a transcript that may still look active. */
-export function officeCharacterStatus(
-  tasks: OfficeTask[],
-  sessions: OfficeSession[],
-): OfficeCharacterStatus {
-  const priority = (task: OfficeTask) =>
-    task.status === 'in_progress'
-      ? 3
-      : task.status === 'review'
-        ? 2
-        : task.status === 'blocked'
-          ? 1
-          : 0;
-  const task = [...tasks].sort(
-    (a, b) => priority(b) - priority(a) || b.updatedAt.localeCompare(a.updatedAt),
-  )[0];
-  if (task) {
-    if (task.status === 'failed') return 'error';
-    if (task.status === 'blocked') return 'blocked';
-    if (task.status === 'review') return 'review';
-    if (task.status === 'in_progress') return 'working';
-    return 'idle';
-  }
-  const session = [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-  if (session?.status === 'running' || session?.status === 'starting') return 'working';
-  return 'idle';
-}
+/** A call still occupying its agent — the character stays 'working' while
+ *  any of these exist for it, and one call ending must never flip a
+ *  character idle while a sibling concurrent call is still open. */
+const OPEN_CALL_STATUSES: ReadonlySet<AgentCallLogEntry['status']> = new Set([
+  'running',
+  'waiting_response',
+]);
 
-/** Projects provide residents; observed Claude sessions provide live activity.
- * This is presentation state only: creating a character never launches a model.
+/**
+ * Persistent characters sourced from the CC-native agent roster
+ * (`~/.claude/agents`), independent of any Office Project/AgentDefinition —
+ * see docs/task-log.md. CC is the sole authority on which agents exist;
+ * Office only observes.
+ *
+ * Live activity comes from observed calls (`agentCallLogSnapshot` /
+ * `agentCallUpdated`), keyed by the call's resolved `agentFilePath`. A call
+ * that could not be matched to exactly one roster file (`recognized: false`)
+ * never creates or activates a character — it appears only in the read-only
+ * call list as "未辨識 Agent" (see TaskLogPanel). Creating or idling a
+ * character never launches a model.
  */
 export class OfficeCharacters {
-  private snapshot: Snapshot | undefined;
+  private roster: NativeAgentRosterEntry[] = [];
+  /** agentFilePath -> set of currently-open call ids for that agent. Several
+   *  concurrent calls to one agent are tracked individually so one ending
+   *  never idles the character while a sibling call is still running. */
+  private readonly openCallsByAgent = new Map<string, Set<string>>();
+  /** agentFilePath -> stable negative character id, so the same agent never
+   *  gets a second character across roster refreshes or call updates. */
   private readonly ids = new Map<string, number>();
-  private readonly runtimeSessions = new Map<number, string>();
 
   receive(message: ServerMessage): void {
-    if (message.type === 'officeState') this.snapshot = message;
-    if (message.type === 'agentCreated' && message.sessionId) {
-      this.runtimeSessions.set(message.id, message.sessionId);
+    if (message.type === 'nativeAgentRoster') {
+      this.roster = message.agents;
+    } else if (message.type === 'agentCallLogSnapshot') {
+      this.openCallsByAgent.clear();
+      for (const call of message.calls) this.applyCall(call);
+    } else if (message.type === 'agentCallUpdated') {
+      this.applyCall(message.call);
     }
-    if (message.type === 'existingAgents') {
-      this.runtimeSessions.clear();
-      for (const id of message.agents) {
-        const sessionId = message.agentMeta[id]?.sessionId;
-        if (sessionId) this.runtimeSessions.set(id, sessionId);
-      }
+  }
+
+  private applyCall(call: AgentCallLogEntry): void {
+    if (!call.recognized || !call.agentFilePath) return;
+    const open = this.openCallsByAgent.get(call.agentFilePath) ?? new Set<string>();
+    if (OPEN_CALL_STATUSES.has(call.status)) {
+      open.add(call.id);
+    } else {
+      open.delete(call.id);
     }
-    if (message.type === 'agentClosed') this.runtimeSessions.delete(message.id);
+    this.openCallsByAgent.set(call.agentFilePath, open);
   }
 
   sync(os: OfficeState, layoutReady: boolean): number[] {
-    const snapshot = this.snapshot;
-    if (!snapshot || !layoutReady) return [];
-    const members = new Set(snapshot.memberships.map((member) => member.agentId));
-    // With no project selected, show the global library (also after a restart).
-    const agents = snapshot.storage.ready
-      ? snapshot.agents.filter((agent) => !snapshot.activeProjectId || members.has(agent.id))
-      : [];
-    const wanted = new Set(agents.map((agent) => agent.id));
-    const sessions = snapshot.sessions ?? [];
-    const owners = new Map<string, Set<string>>();
-    for (const session of sessions) {
-      if (session.provider !== 'claude') continue;
-      for (const key of new Set(
-        [session.id, session.providerSessionId].filter((id): id is string => !!id),
-      )) {
-        const values = owners.get(key) ?? new Set<string>();
-        values.add(session.agentId);
-        owners.set(key, values);
-      }
-    }
-    for (const [id, sessionId] of this.runtimeSessions) {
-      const matches = owners.get(sessionId);
-      // Never guess by name, folder, or an ambiguous provider session.
-      const owner = matches?.size === 1 ? [...matches][0] : undefined;
-      os.setOfficeSuppressed(id, owner !== undefined);
-    }
+    if (!layoutReady) return [];
+    const wanted = new Set(this.roster.map((agent) => agent.filePath));
     for (const ch of [...os.characters.values()]) {
       if (ch.officeAgentId && !wanted.has(ch.officeAgentId)) {
         os.removeAgent(ch.id);
@@ -109,56 +82,26 @@ export class OfficeCharacters {
       }
     }
     const result: number[] = [];
-    for (const agent of [...agents].sort((a, b) => a.id.localeCompare(b.id))) {
-      let id = this.ids.get(agent.id);
+    for (const agent of [...this.roster].sort((a, b) => a.filePath.localeCompare(b.filePath))) {
+      let id = this.ids.get(agent.filePath);
       if (id === undefined) {
         // Separate from positive runtime ids, small negative subagents and greeter.
-        id = -10_000_000_000 - hashId(agent.id);
+        id = -10_000_000_000 - hashId(agent.filePath);
         while ([...this.ids.values()].includes(id) || os.characters.has(id)) id--;
-        this.ids.set(agent.id, id);
+        this.ids.set(agent.filePath, id);
       }
-      const palette = hashId(agent.id) % Math.max(1, getLoadedCharacterCount());
-      os.addAgent(
-        id,
-        palette,
-        0,
-        snapshot.memberships.find((member) => member.agentId === agent.id)?.seatId,
-      );
+      const palette = hashId(agent.filePath) % Math.max(1, getLoadedCharacterCount());
+      os.addAgent(id, palette, 0);
       const ch = os.characters.get(id)!;
-      ch.officeAgentId = agent.id;
+      ch.officeAgentId = agent.filePath;
       ch.agentName = agent.name;
-      const tasks = snapshot.tasks.filter((task) => task.assignedAgentId === agent.id);
-      const agentSessions = sessions.filter(
-        (session) =>
-          session.agentId === agent.id &&
-          (!snapshot.activeProjectId || session.projectId === snapshot.activeProjectId),
-      );
-      const status = officeCharacterStatus(tasks, agentSessions);
-      // Prefer the latest run, never a stale transcript from a previous task.
-      const latest = [...agentSessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-      const live =
-        latest &&
-        [...this.runtimeSessions].find(
-          ([, sessionId]) =>
-            owners.get(sessionId)?.size === 1 &&
-            (sessionId === latest.id || sessionId === latest.providerSessionId),
-        );
-      const observed = live ? os.characters.get(live[0]) : undefined;
-      ch.officeStatus =
-        status === 'working' &&
-        (observed?.bubbleType === 'permission' ||
-          (observed?.waitingAwaitingInput && observed.bubbleType === 'waiting'))
-          ? 'waiting'
-          : status;
-      const active = ch.officeStatus === 'working';
+      const openCount = this.openCallsByAgent.get(agent.filePath)?.size ?? 0;
+      const status: OfficeCharacterStatus = openCount > 0 ? 'working' : 'idle';
+      ch.officeStatus = status;
+      const active = status === 'working';
       if (ch.isActive !== active) os.setAgentActive(id, active);
-      os.setAgentTool(id, active ? (observed?.currentTool ?? null) : null);
-      if (ch.officeStatus === 'waiting' && observed?.bubbleType === 'permission')
-        os.showPermissionBubble(id);
-      else if (ch.officeStatus === 'review' || ch.officeStatus === 'waiting') {
-        if (ch.bubbleType !== 'waiting') os.showWaitingBubble(id, true);
-      } else ch.bubbleType = null;
-      if (observed) os.setAgentContext(id, observed.contextTokens, observed.maxContextTokens);
+      os.setAgentTool(id, null);
+      ch.bubbleType = null;
       result.push(id);
     }
     return result;

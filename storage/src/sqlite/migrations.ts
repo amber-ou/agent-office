@@ -252,7 +252,57 @@ CREATE TABLE agent_file_migrations (
 `,
 };
 
-export const MIGRATIONS: readonly Migration[] = [MIGRATION_001, MIGRATION_002, MIGRATION_003];
+/**
+ * Migration 4 — the observed CC call log (Office-as-activity-dashboard).
+ *
+ * Deliberately NOT a foreign key onto `projects`/`agents`/`tasks`: a call is
+ * observed from an arbitrary Claude Code conversation, which may have no
+ * Office project or agent at all, and sometimes no resolvable agent identity
+ * ("unrecognized"). A sibling table, not a reuse of `tasks`/`agent_sessions`,
+ * so the new call history is never conflated with Office's own dispatched
+ * work (see `storage/src/callLog.ts`).
+ *
+ * `(parent_session_id, tool_use_id)` is the natural key: both come straight
+ * from the transcript, so a repeated or late-arriving event is a dedup
+ * lookup, never a second row.
+ */
+const MIGRATION_004: Migration = {
+  version: 4,
+  name: 'agent-call-log',
+  up: `
+CREATE TABLE agent_calls (
+  id                     TEXT PRIMARY KEY,
+  agent_name             TEXT NOT NULL,
+  agent_file_path        TEXT,
+  recognized             INTEGER NOT NULL,
+  parent_session_id      TEXT NOT NULL,
+  tool_use_id            TEXT NOT NULL,
+  task_text              TEXT,
+  task_description       TEXT,
+  status                 TEXT NOT NULL,
+  started_at             TEXT,
+  start_unknown          INTEGER NOT NULL,
+  ended_at               TEXT,
+  usage_input_tokens     INTEGER,
+  usage_output_tokens    INTEGER,
+  usage_cache_creation_tokens INTEGER,
+  usage_cache_read_tokens     INTEGER,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL
+) STRICT;
+
+CREATE UNIQUE INDEX uq_agent_calls_session_tool ON agent_calls (parent_session_id, tool_use_id);
+CREATE INDEX idx_agent_calls_started ON agent_calls (started_at);
+CREATE INDEX idx_agent_calls_status ON agent_calls (status);
+`,
+};
+
+export const MIGRATIONS: readonly Migration[] = [
+  MIGRATION_001,
+  MIGRATION_002,
+  MIGRATION_003,
+  MIGRATION_004,
+];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
   (highest, migration) => Math.max(highest, migration.version),
